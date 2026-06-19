@@ -49,9 +49,11 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
   private recorder: MediaRecorder | null = null;
   private socket: WebSocket | null = null;
   private keepAliveTimer: number | null = null;
+  private recorderWatchdogTimer: number | null = null;
   private sentFirstAudioChunk = false;
   private audioChunksSent = 0;
   private audioBytesSent = 0;
+  private usingFallbackRecorderStream = false;
 
   constructor(options: DeepgramNovaSpeechEngineOptions) {
     this.apiKey = options.apiKey;
@@ -89,6 +91,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     this.active = false;
     this.callbacks.onActiveChange?.(false);
     this.clearKeepAlive();
+    this.clearRecorderWatchdog();
 
     if (this.recorder && this.recorder.state !== 'inactive') {
       this.recorder.stop();
@@ -124,6 +127,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
 
   private async open(): Promise<void> {
     try {
+      this.usingFallbackRecorderStream = false;
       this.stream = this.providedStream ?? await navigator.mediaDevices.getUserMedia({ audio: true });
       const mimeType = this.pickMimeType();
       const params = new URLSearchParams({
@@ -145,26 +149,8 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
 
         this.active = true;
         this.callbacks.onActiveChange?.(true);
-        this.callbacks.onStatusChange?.('Connected to Deepgram. Waiting for speech…');
-        this.recorder = new MediaRecorder(this.stream, mimeType ? { mimeType } : undefined);
-        this.recorder.ondataavailable = (event) => {
-          if (event.data.size > 0 && this.socket?.readyState === WebSocket.OPEN) {
-            this.socket.send(event.data);
-            this.audioChunksSent += 1;
-            this.audioBytesSent += event.data.size;
-            this.callbacks.onAudioSend?.({ chunks: this.audioChunksSent, bytes: this.audioBytesSent });
-            if (!this.sentFirstAudioChunk) {
-              this.sentFirstAudioChunk = true;
-              this.callbacks.onStatusChange?.('Audio is streaming to Deepgram. Waiting for transcript…');
-            } else if (this.audioChunksSent % 20 === 0) {
-              this.callbacks.onStatusChange?.(`Audio is streaming to Deepgram (${this.audioChunksSent} chunks, ${Math.round(this.audioBytesSent / 1024)} KB). Waiting for transcript…`);
-            }
-          }
-        };
-        this.recorder.onerror = (event) => {
-          this.emitError({ code: 'processing-failure', message: SPEECH_ERROR_MESSAGES['processing-failure'], cause: event });
-        };
-        this.recorder.start(DEFAULT_TIMESLICE_MS);
+        this.callbacks.onStatusChange?.('Connected to Deepgram. Starting browser audio recorder…');
+        this.startRecorder(this.stream, mimeType);
         this.startKeepAlive();
       };
       this.socket.onmessage = (event) => this.handleMessage(event.data);
@@ -178,6 +164,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
         this.active = false;
         this.callbacks.onActiveChange?.(false);
         this.clearKeepAlive();
+        this.clearRecorderWatchdog();
         if (!this.manuallyStopped) {
           this.callbacks.onStatusChange?.('Deepgram connection closed unexpectedly.');
           this.emitError({ code: 'connectivity-loss', message: SPEECH_ERROR_MESSAGES['connectivity-loss'] });
@@ -187,6 +174,84 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
       this.active = false;
       this.callbacks.onActiveChange?.(false);
       this.callbacks.onStatusChange?.('Could not start microphone capture.');
+      this.emitError({ code: 'microphone-permission', message: SPEECH_ERROR_MESSAGES['microphone-permission'], cause: error });
+    }
+  }
+
+  private startRecorder(stream: MediaStream, mimeType: string | undefined): void {
+    this.clearRecorderWatchdog();
+
+    try {
+      this.recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    } catch (error) {
+      this.callbacks.onStatusChange?.('Browser MediaRecorder failed to start for the microphone stream.');
+      this.emitError({ code: 'processing-failure', message: 'Browser MediaRecorder failed to start for the microphone stream.', cause: error });
+      return;
+    }
+
+    this.recorder.ondataavailable = (event) => {
+      if (event.data.size > 0 && this.socket?.readyState === WebSocket.OPEN) {
+        this.socket.send(event.data);
+        this.audioChunksSent += 1;
+        this.audioBytesSent += event.data.size;
+        this.callbacks.onAudioSend?.({ chunks: this.audioChunksSent, bytes: this.audioBytesSent });
+        if (!this.sentFirstAudioChunk) {
+          this.sentFirstAudioChunk = true;
+          this.clearRecorderWatchdog();
+          this.callbacks.onStatusChange?.('Audio is streaming to Deepgram. Waiting for transcript…');
+        } else if (this.audioChunksSent % 20 === 0) {
+          this.callbacks.onStatusChange?.(`Audio is streaming to Deepgram (${this.audioChunksSent} chunks, ${Math.round(this.audioBytesSent / 1024)} KB). Waiting for transcript…`);
+        }
+      }
+    };
+    this.recorder.onerror = (event) => {
+      this.callbacks.onStatusChange?.('Browser MediaRecorder reported an error.');
+      this.emitError({ code: 'processing-failure', message: SPEECH_ERROR_MESSAGES['processing-failure'], cause: event });
+    };
+    this.recorder.onstart = () => {
+      this.callbacks.onStatusChange?.(`Browser audio recorder started (${this.recorder?.mimeType || mimeType || 'default audio format'}). Waiting for audio chunks…`);
+    };
+    this.recorder.onstop = () => {
+      if (!this.manuallyStopped && this.active) {
+        this.callbacks.onStatusChange?.('Browser audio recorder stopped unexpectedly.');
+      }
+    };
+
+    this.recorder.start(DEFAULT_TIMESLICE_MS);
+    this.startRecorderWatchdog(mimeType);
+  }
+
+  private startRecorderWatchdog(mimeType: string | undefined): void {
+    this.clearRecorderWatchdog();
+    this.recorderWatchdogTimer = window.setTimeout(() => {
+      this.recorderWatchdogTimer = null;
+      if (this.audioChunksSent > 0 || this.manuallyStopped || !this.active) {
+        return;
+      }
+
+      this.callbacks.onStatusChange?.('No audio chunks from browser recorder yet. Restarting recorder with a fresh microphone stream…');
+      void this.restartRecorderWithFreshStream(mimeType);
+    }, 3000);
+  }
+
+  private async restartRecorderWithFreshStream(mimeType: string | undefined): Promise<void> {
+    if (this.usingFallbackRecorderStream || !navigator.mediaDevices?.getUserMedia) {
+      this.callbacks.onStatusChange?.('Browser recorder still has not produced audio chunks. Check Chrome microphone input and reload.');
+      return;
+    }
+
+    this.usingFallbackRecorderStream = true;
+    if (this.recorder && this.recorder.state !== 'inactive') {
+      this.recorder.stop();
+    }
+
+    try {
+      const fallbackStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.stream = fallbackStream;
+      this.callbacks.onStatusChange?.('Restarted browser recorder with a fresh microphone stream. Waiting for audio chunks…');
+      this.startRecorder(fallbackStream, mimeType);
+    } catch (error) {
+      this.callbacks.onStatusChange?.('Could not restart microphone recorder.');
       this.emitError({ code: 'microphone-permission', message: SPEECH_ERROR_MESSAGES['microphone-permission'], cause: error });
     }
   }
@@ -306,6 +371,13 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     if (this.keepAliveTimer !== null) {
       window.clearInterval(this.keepAliveTimer);
       this.keepAliveTimer = null;
+    }
+  }
+
+  private clearRecorderWatchdog(): void {
+    if (this.recorderWatchdogTimer !== null) {
+      window.clearTimeout(this.recorderWatchdogTimer);
+      this.recorderWatchdogTimer = null;
     }
   }
 
