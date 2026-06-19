@@ -74,6 +74,7 @@ export class BrowserSpeechEngine implements SpeechEngine {
       this.recognition.start();
       this.active = true;
       this.callbacks.onAvailabilityChange?.({ available: true });
+      this.callbacks.onActiveChange?.(true);
     } catch (cause) {
       this.active = false;
       this.emitError('processing-failure', cause);
@@ -83,6 +84,7 @@ export class BrowserSpeechEngine implements SpeechEngine {
   stop(): void {
     this.manuallyStopped = true;
     this.active = false;
+    this.callbacks.onActiveChange?.(false);
     this.clearRestartTimer();
 
     if (!this.recognition) {
@@ -144,6 +146,7 @@ export class BrowserSpeechEngine implements SpeechEngine {
 
     if (code === 'connectivity-loss' || code === 'processing-failure') {
       this.active = false;
+      this.callbacks.onActiveChange?.(false);
       this.manuallyStopped = false;
       this.scheduleRestart();
       return;
@@ -151,10 +154,12 @@ export class BrowserSpeechEngine implements SpeechEngine {
 
     this.manuallyStopped = true;
     this.active = false;
+    this.callbacks.onActiveChange?.(false);
   };
 
   private handleEnd = (): void => {
     this.active = false;
+    this.callbacks.onActiveChange?.(false);
     this.recognition = null;
 
     if (!this.manuallyStopped) {

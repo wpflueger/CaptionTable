@@ -74,6 +74,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
   stop(): void {
     this.manuallyStopped = true;
     this.active = false;
+    this.callbacks.onActiveChange?.(false);
     this.clearKeepAlive();
 
     if (this.recorder && this.recorder.state !== 'inactive') {
@@ -125,6 +126,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
         }
 
         this.active = true;
+        this.callbacks.onActiveChange?.(true);
         this.recorder = new MediaRecorder(this.stream, mimeType ? { mimeType } : undefined);
         this.recorder.ondataavailable = (event) => {
           if (event.data.size > 0 && this.socket?.readyState === WebSocket.OPEN) {
@@ -140,10 +142,12 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
       this.socket.onmessage = (event) => this.handleMessage(event.data);
       this.socket.onerror = (event) => {
         this.active = false;
+        this.callbacks.onActiveChange?.(false);
         this.emitError({ code: 'connectivity-loss', message: SPEECH_ERROR_MESSAGES['connectivity-loss'], cause: event });
       };
       this.socket.onclose = () => {
         this.active = false;
+        this.callbacks.onActiveChange?.(false);
         this.clearKeepAlive();
         if (!this.manuallyStopped) {
           this.emitError({ code: 'connectivity-loss', message: SPEECH_ERROR_MESSAGES['connectivity-loss'] });
@@ -151,6 +155,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
       };
     } catch (error) {
       this.active = false;
+      this.callbacks.onActiveChange?.(false);
       this.emitError({ code: 'microphone-permission', message: SPEECH_ERROR_MESSAGES['microphone-permission'], cause: error });
     }
   }

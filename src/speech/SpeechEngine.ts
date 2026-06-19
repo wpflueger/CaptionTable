@@ -20,6 +20,7 @@ export interface SpeechEngineCallbacks {
   onFinalText?: (text: string, speakerLabel?: string) => void;
   onError?: (error: SpeechErrorState) => void;
   onAvailabilityChange?: (availability: SpeechAvailability) => void;
+  onActiveChange?: (active: boolean) => void;
 }
 
 export interface SpeechEngine {

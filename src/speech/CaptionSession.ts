@@ -46,6 +46,10 @@ export class CaptionSession {
         };
         this.emit();
       },
+      onActiveChange: (active) => {
+        this.state = { ...this.state, active, error: active ? null : this.state.error };
+        this.emit();
+      },
     });
   }
 
