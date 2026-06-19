@@ -15,6 +15,16 @@ npm run dev
 npm run build
 ```
 
+## Accessibility demo
+
+A static accessible live-caption interface is available in `accessibility-demo.html`. It includes large caption modes, a high-contrast theme, keyboard-friendly controls, persistent notices, and screen-reader status regions.
+
+To view it, serve the folder with a static web server and open `/accessibility-demo.html`:
+
+```bash
+python3 -m http.server 8000
+```
+
 ## Speech recognition layer
 
 The implementation lives in `src/speech/`:
