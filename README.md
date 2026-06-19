@@ -57,7 +57,7 @@ Calling `session.stop()` immediately stops the underlying speech engine and clea
 
 ## Automatic speaker identification
 
-Automatic speaker identification requires a diarization-capable speech backend. The preferred local-development backend is Deepgram Nova live transcription with diarization:
+Automatic speaker identification uses Deepgram Nova live transcription with diarization:
 
 ```bash
 cp .env.example .env.local
@@ -68,16 +68,9 @@ npm run dev
 
 When `VITE_DEEPGRAM_API_KEY` is present, the app uses Deepgram Nova and finalized captions show automatic speaker labels such as `Person 1`, `Person 2`, etc.
 
-Azure Speech Conversation Transcription is also supported as an alternate backend:
+Without the Deepgram key, the app falls back to Chrome Web Speech. Chrome Web Speech can transcribe audio but does **not** provide automatic speaker diarization, so the fallback cannot be a fully set-and-forget speaker-identification experience.
 
-```bash
-VITE_AZURE_SPEECH_KEY=...
-VITE_AZURE_SPEECH_REGION=...
-```
-
-Without Deepgram or Azure credentials, the app falls back to Chrome Web Speech. Chrome Web Speech can transcribe audio but does **not** provide automatic speaker diarization, so the fallback cannot be a fully set-and-forget speaker-identification experience.
-
-Do not ship long-lived provider API keys in a public browser app. The `VITE_*` keys are intended for local development; production should use a short-lived token endpoint or backend proxy.
+Do not ship long-lived provider API keys in a public browser app. The `VITE_DEEPGRAM_API_KEY` setup is intended for local development; production should use a short-lived token endpoint or backend proxy.
 
 ## Onboarding and voice enrollment
 

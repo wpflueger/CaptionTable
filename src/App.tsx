@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AzureConversationTranscriberEngine,
   BrowserSpeechEngine,
   CaptionLine,
   CaptionSession,
@@ -28,10 +27,8 @@ const speakerOptions = ['You', 'Person 1', 'Person 2', 'Person 3', 'Uncertain sp
 type SpeakerLabel = string;
 
 const deepgramApiKey = import.meta.env.VITE_DEEPGRAM_API_KEY as string | undefined;
-const azureSpeechKey = import.meta.env.VITE_AZURE_SPEECH_KEY as string | undefined;
-const azureSpeechRegion = import.meta.env.VITE_AZURE_SPEECH_REGION as string | undefined;
-const speechBackend = deepgramApiKey ? 'Deepgram Nova' : azureSpeechKey && azureSpeechRegion ? 'Azure Speech' : 'Chrome Web Speech';
-const automaticSpeakerIdEnabled = speechBackend !== 'Chrome Web Speech';
+const speechBackend = deepgramApiKey ? 'Deepgram Nova' : 'Chrome Web Speech';
+const automaticSpeakerIdEnabled = speechBackend === 'Deepgram Nova';
 
 export function App() {
   const [captionState, setCaptionState] = useState<CaptionSessionState>(initialCaptionState);
@@ -53,9 +50,7 @@ export function App() {
       new CaptionSession(
         deepgramApiKey
           ? new DeepgramNovaSpeechEngine({ apiKey: deepgramApiKey, language, model: 'nova-3' })
-          : azureSpeechKey && azureSpeechRegion
-            ? new AzureConversationTranscriberEngine({ speechKey: azureSpeechKey, region: azureSpeechRegion, language })
-            : new BrowserSpeechEngine(language),
+          : new BrowserSpeechEngine(language),
       ),
     [],
   );
@@ -253,7 +248,7 @@ export function App() {
               <p>
                 {automaticSpeakerIdEnabled
                   ? `Automatic diarization is enabled with ${speechBackend}. Speaker labels come from the speech backend.`
-                  : 'Automatic diarization requires Azure Speech credentials. This local Chrome fallback cannot infer speakers automatically.'}
+                  : 'Automatic diarization requires a Deepgram API key. This local Chrome fallback cannot infer speakers automatically.'}
               </p>
             </div>
             {!automaticSpeakerIdEnabled ? (
