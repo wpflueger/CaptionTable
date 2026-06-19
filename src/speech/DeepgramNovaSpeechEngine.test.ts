@@ -52,6 +52,7 @@ describe('DeepgramNovaSpeechEngine', () => {
 
   beforeEach(() => {
     FakeWebSocket.instances = [];
+    vi.useFakeTimers();
     vi.stubGlobal('WebSocket', Object.assign(FakeWebSocket, { OPEN: FakeWebSocket.OPEN }));
     vi.stubGlobal('MediaRecorder', FakeMediaRecorder);
     Object.defineProperty(navigator, 'mediaDevices', {
@@ -63,6 +64,7 @@ describe('DeepgramNovaSpeechEngine', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: originalMediaDevices });
     globalThis.WebSocket = originalWebSocket;
@@ -83,7 +85,7 @@ describe('DeepgramNovaSpeechEngine', () => {
     expect(socket.protocols).toEqual(['token', 'test-key']);
   });
 
-  it('emits automatic speaker labels from Deepgram word speaker ids', async () => {
+  it('emits automatic speaker labels and splits multi-speaker results into separate transcript turns', async () => {
     const finals: Array<{ text: string; speaker?: string }> = [];
     const interims: Array<{ text: string; speaker?: string }> = [];
     const activeStates: boolean[] = [];
@@ -126,6 +128,42 @@ describe('DeepgramNovaSpeechEngine', () => {
         ],
       },
     });
-    expect(finals).toEqual([{ text: 'that is right', speaker: 'Person 2' }]);
+    expect(finals).toEqual([
+      { text: 'that is', speaker: 'Person 2' },
+      { text: 'right', speaker: 'Person 1' },
+    ]);
+  });
+
+  it('uses a provided shared media stream instead of opening a second microphone stream', async () => {
+    const stop = vi.fn();
+    const stream = { getTracks: () => [{ stop }] } as unknown as MediaStream;
+    const getUserMedia = vi.spyOn(navigator.mediaDevices, 'getUserMedia');
+    const engine = new DeepgramNovaSpeechEngine({ apiKey: 'test-key', mediaStream: stream });
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    FakeWebSocket.instances[0].onopen?.();
+
+    expect(getUserMedia).not.toHaveBeenCalled();
+    engine.stop();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('cleans up recorder, socket, keepalive, and active state on stop', async () => {
+    const activeStates: boolean[] = [];
+    const engine = new DeepgramNovaSpeechEngine({ apiKey: 'test-key' });
+    engine.setCallbacks({ onActiveChange: (active) => activeStates.push(active) });
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.onopen?.();
+
+    vi.advanceTimersByTime(8000);
+    expect(socket.sent.some((payload) => typeof payload === 'string' && payload.includes('KeepAlive'))).toBe(true);
+
+    engine.stop();
+    expect(activeStates).toContain(false);
+    expect(socket.sent.some((payload) => typeof payload === 'string' && payload.includes('CloseStream'))).toBe(true);
   });
 });

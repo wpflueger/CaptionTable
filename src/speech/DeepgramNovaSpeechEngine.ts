@@ -9,6 +9,7 @@ export interface DeepgramNovaSpeechEngineOptions {
   apiKey: string;
   language?: string;
   model?: 'nova-3' | 'nova-2' | string;
+  mediaStream?: MediaStream;
 }
 
 type DeepgramWord = {
@@ -41,6 +42,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
   private active = false;
   private manuallyStopped = false;
   private stream: MediaStream | null = null;
+  private providedStream: MediaStream | null = null;
   private recorder: MediaRecorder | null = null;
   private socket: WebSocket | null = null;
   private keepAliveTimer: number | null = null;
@@ -49,6 +51,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     this.apiKey = options.apiKey;
     this.language = options.language ?? 'en-US';
     this.model = options.model ?? DEFAULT_MODEL;
+    this.providedStream = options.mediaStream ?? null;
   }
 
   start(): void {
@@ -96,6 +99,10 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     this.language = language;
   }
 
+  setMediaStream(stream: MediaStream | null): void {
+    this.providedStream = stream;
+  }
+
   setCallbacks(callbacks: SpeechEngineCallbacks): void {
     this.callbacks = callbacks;
     this.callbacks.onAvailabilityChange?.({ available: true });
@@ -107,7 +114,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
 
   private async open(): Promise<void> {
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.stream = this.providedStream ?? await navigator.mediaDevices.getUserMedia({ audio: true });
       const mimeType = this.pickMimeType();
       const params = new URLSearchParams({
         model: this.model,
@@ -181,12 +188,39 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
       return;
     }
 
-    const speakerLabel = this.getSpeakerLabel(alternative?.words ?? []);
-    if (message.is_final || message.speech_final) {
-      this.callbacks.onFinalText?.(text, speakerLabel);
-    } else {
-      this.callbacks.onInterimText?.(text, speakerLabel);
+    const speakerSegments = this.getSpeakerSegments(alternative?.words ?? [], text);
+    speakerSegments.forEach((segment) => {
+      if (message.is_final || message.speech_final) {
+        this.callbacks.onFinalText?.(segment.text, segment.speakerLabel);
+      } else {
+        this.callbacks.onInterimText?.(segment.text, segment.speakerLabel);
+      }
+    });
+  }
+
+  private getSpeakerSegments(words: DeepgramWord[], fallbackText: string): Array<{ text: string; speakerLabel: string }> {
+    if (!words.length) {
+      return [{ text: fallbackText, speakerLabel: 'Uncertain speaker' }];
     }
+
+    const segments: Array<{ speaker?: number; words: string[] }> = [];
+    words.forEach((word) => {
+      const text = word.punctuated_word ?? word.word;
+      if (!text) return;
+
+      const current = segments.at(-1);
+      if (!current || current.speaker !== word.speaker) {
+        segments.push({ speaker: word.speaker, words: [text] });
+        return;
+      }
+
+      current.words.push(text);
+    });
+
+    return segments.map((segment) => ({
+      text: segment.words.join(' ').trim(),
+      speakerLabel: typeof segment.speaker === 'number' ? `Person ${segment.speaker + 1}` : 'Uncertain speaker',
+    })).filter((segment) => segment.text.length > 0);
   }
 
   private getSpeakerLabel(words: DeepgramWord[]): string {

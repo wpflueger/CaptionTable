@@ -22,6 +22,7 @@ vi.mock('./speech', async (importOriginal) => {
       hoisted.callbacks?.onActiveChange?.(false);
     }
     setLanguage(): void {}
+    setMediaStream = vi.fn();
     setCallbacks(callbacks: actual.SpeechEngineCallbacks): void {
       hoisted.callbacks = callbacks;
       callbacks.onAvailabilityChange?.({ available: true });

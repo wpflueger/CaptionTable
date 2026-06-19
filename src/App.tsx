@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  BrowserSpeechEngine,
   CaptionLine,
   CaptionSession,
   CaptionSessionState,
@@ -40,15 +39,11 @@ export function App() {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const stopVolumeMeterRef = useRef<(() => void) | null>(null);
 
-  const captionSession = useMemo(
-    () =>
-      new CaptionSession(
-        deepgramApiKey
-          ? new DeepgramNovaSpeechEngine({ apiKey: deepgramApiKey, language, model: 'nova-3' })
-          : new BrowserSpeechEngine(language),
-      ),
+  const speechEngine = useMemo(
+    () => new DeepgramNovaSpeechEngine({ apiKey: deepgramApiKey ?? '', language, model: 'nova-3' }),
     [],
   );
+  const captionSession = useMemo(() => new CaptionSession(speechEngine), [speechEngine]);
   const lifecycle = useMemo(
     () =>
       new SessionLifecycle({
@@ -68,10 +63,11 @@ export function App() {
   useEffect(
     () => () => {
       stopVolumeMeterRef.current?.();
+      speechEngine.setMediaStream(null);
       captionSession.stop();
       void lifecycle.stop();
     },
-    [captionSession, lifecycle],
+    [captionSession, lifecycle, speechEngine],
   );
 
   useEffect(() => {
@@ -91,7 +87,13 @@ export function App() {
     setGuidance(null);
     setMicrophoneStatus('Requesting microphone access…');
     await lifecycle.start();
-    await startVolumeMeter();
+    const stream = await startVolumeMeter();
+    if (!stream) {
+      await lifecycle.stop();
+      return;
+    }
+
+    speechEngine.setMediaStream(stream);
     captionSession.start();
   }
 
@@ -100,16 +102,17 @@ export function App() {
     stopVolumeMeterRef.current = null;
     setVolumePercent(0);
     setMicrophoneStatus('Stopped');
+    speechEngine.setMediaStream(null);
     captionSession.stop();
     await lifecycle.stop();
   }
 
-  async function startVolumeMeter() {
+  async function startVolumeMeter(): Promise<MediaStream | null> {
     stopVolumeMeterRef.current?.();
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setMicrophoneStatus('Microphone capture is not available in this browser.');
-      return;
+      return null;
     }
 
     try {
@@ -118,7 +121,7 @@ export function App() {
       if (!AudioContextCtor) {
         setMicrophoneStatus('Microphone allowed; audio meter is unavailable.');
         stopVolumeMeterRef.current = () => stream.getTracks().forEach((track) => track.stop());
-        return;
+        return stream;
       }
 
       const audioContext = new AudioContextCtor();
@@ -150,10 +153,12 @@ export function App() {
         stream.getTracks().forEach((track) => track.stop());
         void audioContext.close();
       };
+      return stream;
     } catch (error) {
       setMicrophoneStatus('Microphone access was blocked or failed.');
       setGuidance('I can’t hear anyone.');
       console.error('Microphone setup failed.', error);
+      return null;
     }
   }
 
