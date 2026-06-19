@@ -37,6 +37,15 @@ button { cursor: pointer; }
   position: absolute; top: 1rem; right: 1rem; border: 0; border-radius: 999px;
   padding: 0.7rem 1rem; color: #d8ecff; background: rgba(255, 255, 255, 0.1);
 }
+.settings-button:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #facc15; outline-offset: 3px; }
+.settings-panel {
+  display: grid; gap: 1rem; margin: 1.5rem 0; padding: 1rem; border-radius: 20px;
+  background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.14);
+}
+.settings-panel label { display: grid; gap: 0.45rem; color: #dbeafe; font-weight: 800; }
+.settings-panel select, .settings-panel input { width: 100%; min-height: 48px; border-radius: 12px; padding: 0.45rem 0.7rem; }
+.notice { margin: 1rem 0; padding: 0.85rem 1rem; border-radius: 16px; background: rgba(219, 234, 254, 0.13); color: #e0f2fe; border: 1px solid rgba(125, 211, 252, 0.35); }
+.notice--error { background: rgba(220, 38, 38, 0.18); color: #fee2e2; border-color: rgba(248, 113, 113, 0.55); }
 .eyebrow, .listening-indicator { color: #86efac; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
 h1 { margin: 0; font-size: clamp(2.6rem, 9vw, 6.8rem); line-height: 0.95; }
 .intro { max-width: 760px; color: #cfe0ef; font-size: clamp(1.1rem, 2.2vw, 1.5rem); line-height: 1.6; }
@@ -72,9 +81,15 @@ h1 { margin: 0; font-size: clamp(2.6rem, 9vw, 6.8rem); line-height: 0.95; }
 .caption-tools label { display: flex; align-items: center; gap: 1rem; font-weight: 800; }
 .caption-tools input { accent-color: #86efac; min-width: 160px; }
 .secondary-action { padding: 0.85rem 1.2rem; color: #06111f; background: #dbeafe; }
+.meter { flex: 1; min-width: 160px; height: 18px; overflow: hidden; border-radius: 999px; background: rgba(255, 255, 255, 0.14); }
+.meter span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #86efac, #facc15); transition: width 120ms ease; }
+.session-notices { padding: 1rem; border-radius: 22px; background: rgba(255, 255, 255, 0.08); color: #dbeafe; }
+.session-notices p { margin: 0.25rem 0; }
+.interim-badge { justify-self: center; align-self: start; margin-top: -2rem; padding: 0.4rem 0.75rem; border-radius: 999px; color: #06111f; background: #facc15; font-weight: 900; }
 .turns-panel h2 { margin: 0 0 1rem; }
 .turn-list { display: grid; gap: 0.8rem; }
-.turn-card { padding: 1rem; border-radius: 20px; background: rgba(255, 255, 255, 0.1); }
+.turn-card, .empty-state { padding: 1rem; border-radius: 20px; background: rgba(255, 255, 255, 0.1); }
+.turn-card { margin: 0; }
 .turn-card div { display: flex; justify-content: space-between; gap: 1rem; color: #dbeafe; }
 .turn-card span, .turn-card p { color: #c5d8e8; }
 .turn-card p { margin-bottom: 0; line-height: 1.5; }

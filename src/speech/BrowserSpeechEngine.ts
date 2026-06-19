@@ -32,6 +32,7 @@ export class BrowserSpeechEngine implements SpeechEngine {
   private recognition: BrowserSpeechRecognition | null = null;
   private active = false;
   private manuallyStopped = false;
+  private restartTimer: number | null = null;
   private readonly SpeechRecognitionCtor?: SpeechRecognitionConstructor;
 
   constructor(language = 'en-US', speechWindow: BrowserSpeechRecognitionWindow = window) {
@@ -58,6 +59,7 @@ export class BrowserSpeechEngine implements SpeechEngine {
       return;
     }
 
+    this.clearRestartTimer();
     this.manuallyStopped = false;
     this.recognition = new this.SpeechRecognitionCtor();
     this.recognition.lang = this.language;
@@ -81,6 +83,7 @@ export class BrowserSpeechEngine implements SpeechEngine {
   stop(): void {
     this.manuallyStopped = true;
     this.active = false;
+    this.clearRestartTimer();
 
     if (!this.recognition) {
       return;
@@ -132,6 +135,12 @@ export class BrowserSpeechEngine implements SpeechEngine {
   };
 
   private handleError = (event: SpeechRecognitionErrorEvent): void => {
+    if (event.error === 'no-speech') {
+      return;
+    }
+
+    this.manuallyStopped = true;
+    this.active = false;
     this.emitError(this.mapError(event.error), event);
   };
 
@@ -140,7 +149,10 @@ export class BrowserSpeechEngine implements SpeechEngine {
     this.recognition = null;
 
     if (!this.manuallyStopped) {
-      this.emitError('processing-failure');
+      this.restartTimer = window.setTimeout(() => {
+        this.restartTimer = null;
+        this.start();
+      }, 250);
     }
   };
 
@@ -155,6 +167,13 @@ export class BrowserSpeechEngine implements SpeechEngine {
         return 'transcription-unavailable';
       default:
         return 'processing-failure';
+    }
+  }
+
+  private clearRestartTimer(): void {
+    if (this.restartTimer !== null) {
+      window.clearTimeout(this.restartTimer);
+      this.restartTimer = null;
     }
   }
 
