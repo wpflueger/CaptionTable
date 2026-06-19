@@ -75,7 +75,7 @@ export function App() {
   );
 
   useEffect(() => {
-    transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: 'smooth' });
+    scrollTranscriptToBottom(transcriptRef.current);
   }, [captionState.captions]);
 
   const latestCaption = captionState.captions.at(-1) ?? null;
@@ -244,7 +244,7 @@ export function App() {
             <div className="meter" aria-label={`Microphone volume ${volumePercent}%`}>
               <span style={{ width: `${volumePercent}%` }} />
             </div>
-            <button className="secondary-action" type="button" onClick={() => transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: 'smooth' })}>
+            <button className="secondary-action" type="button" onClick={() => scrollTranscriptToBottom(transcriptRef.current)}>
               Latest transcript
             </button>
           </section>
@@ -332,6 +332,19 @@ function CaptionCard({ caption }: { caption: CaptionLine }) {
 
 function getSpeakerLabel(caption: CaptionLine | null): string {
   return caption?.speakerLabel || 'Identifying speaker';
+}
+
+function scrollTranscriptToBottom(element: HTMLDivElement | null): void {
+  if (!element) {
+    return;
+  }
+
+  if (typeof element.scrollTo === 'function') {
+    element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    return;
+  }
+
+  element.scrollTop = element.scrollHeight;
 }
 
 function Notice({ children, tone = 'info' }: { children: React.ReactNode; tone?: 'info' | 'error' }) {
