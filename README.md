@@ -1,78 +1,40 @@
 # CaptionTable
 
-CaptionTable is an installable responsive web application for a **Conversation Captioner** experience. It provides start and active-caption screens optimized for phone, tablet, and laptop layouts without login, ads, subscription prompts, account controls, usage meters, or API-key controls.
+CaptionTable is an installable responsive web application for a **Conversation Captioner** experience. It uses **Deepgram Nova** for live transcription and automatic speaker diarization, then displays a full scrollable transcript of who said what.
 
 ## Development
 
 ```bash
 npm install
+cp .env.example .env.local
+# Fill in VITE_DEEPGRAM_API_KEY
 npm run dev
 ```
+
+Open the local Vite URL, usually `http://localhost:5173`.
 
 ## Production build
 
 ```bash
 npm run build
+npm run preview
 ```
-
-## Accessibility demo
-
-A static accessible live-caption interface is available in `accessibility-demo.html`. It includes large caption modes, a high-contrast theme, keyboard-friendly controls, persistent notices, and screen-reader status regions.
-
-To view it, serve the folder with a static web server and open `/accessibility-demo.html`:
-
-```bash
-python3 -m http.server 8000
-```
-
-## Speech recognition layer
-
-The implementation lives in `src/speech/`:
-
-- `SpeechEngine.ts` defines the engine contract, callbacks, availability reporting, and plain-language error states.
-- `BrowserSpeechEngine.ts` adapts the browser `SpeechRecognition` / `webkitSpeechRecognition` APIs when they are available.
-- `CaptionSession.ts` keeps transcript data in memory for the active session, exposes interim captions, replaces interim captions with finalized captions using the same caption id, and clears all caption/session state on Stop.
-- `captionStyles.css` contains basic caption styles with a stable line height to avoid layout jumps between interim and finalized captions.
-
-### Basic usage
-
-```ts
-import { BrowserSpeechEngine, CaptionSession } from './src/speech';
-
-const session = new CaptionSession(new BrowserSpeechEngine('en-US'));
-
-const unsubscribe = session.subscribe((state) => {
-  renderCaptions(state.captions);
-  renderError(state.error?.message ?? null);
-});
-
-startButton.addEventListener('click', () => session.start());
-stopButton.addEventListener('click', () => session.stop());
-languageSelect.addEventListener('change', (event) => {
-  session.setLanguage((event.target as HTMLSelectElement).value);
-});
-```
-
-Calling `session.stop()` immediately stops the underlying speech engine and clears in-memory transcript state.
 
 ## Automatic speaker identification
 
-Automatic speaker identification uses Deepgram Nova live transcription with diarization:
+Automatic speaker identification is Deepgram-only in the main app:
 
 ```bash
-cp .env.example .env.local
-# Fill in:
-# VITE_DEEPGRAM_API_KEY=...
-npm run dev
+VITE_DEEPGRAM_API_KEY=...
 ```
 
-When `VITE_DEEPGRAM_API_KEY` is present, the app uses Deepgram Nova and finalized captions show automatic speaker labels such as `Person 1`, `Person 2`, etc.
+When `VITE_DEEPGRAM_API_KEY` is present, the app uses Deepgram Nova live transcription with `diarize=true`. Caption cards and the full transcript show automatic speaker labels such as `Person 1`, `Person 2`, etc.
 
-Without the Deepgram key, the app falls back to Chrome Web Speech. Chrome Web Speech can transcribe audio but does **not** provide automatic speaker diarization, so the fallback cannot be a fully set-and-forget speaker-identification experience.
+If the key is missing, Start is disabled. There is no manual speaker picker and no browser speech fallback path in the main app.
 
 Do not ship long-lived provider API keys in a public browser app. The `VITE_DEEPGRAM_API_KEY` setup is intended for local development; production should use a short-lived token endpoint or backend proxy.
 
-### AMI diarization integration check
+## AMI diarization integration check
 
 Run an opt-in real Deepgram diarization check against the public AMI Meeting Corpus:
 
@@ -82,8 +44,9 @@ npm run test:deepgram:ami
 
 The script downloads `ES2002a.Mix-Headset.wav`, creates a 90-second clip starting at 180 seconds in `.cache/test-audio/`, sends it to Deepgram Nova with `diarize=true`, and fails unless Deepgram returns a non-empty transcript with at least two detected speakers. Override with `AMI_CLIP_OFFSET_SECONDS=...` and `AMI_CLIP_SECONDS=...` for other segments.
 
-## Onboarding and voice enrollment
+## Tests
 
-The onboarding flow is intentionally short and contains four steps: language selection, microphone permission, text-size selection, and optional voice setup. Voice setup can be skipped, repeated, or deleted later from settings UI actions wired to the voice helpers.
-
-Voice enrollment is capped at 60 seconds. Derived voice representations are designed to stay in browser-local storage by default, and can be moved to IndexedDB by passing a compatible local persistence layer. Speaker labeling uses a conservative confidence threshold before labeling a turn as `You`; otherwise, the turn is labeled `Uncertain speaker` rather than another known participant.
+```bash
+npm test
+npm run build
+```

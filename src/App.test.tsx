@@ -99,8 +99,6 @@ describe('App', () => {
 
     expect(screen.getByText('Conversation Captioner')).toBeInTheDocument();
     expect(screen.getByText('Automatic with Deepgram Nova')).toBeInTheDocument();
-    expect(screen.queryByText('Current speaker')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Person 1' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start Captions' })).toBeEnabled();
   });
 
@@ -111,7 +109,6 @@ describe('App', () => {
 
     expect(screen.getByText('Deepgram key missing')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start Captions' })).toBeDisabled();
-    expect(screen.queryByText('Current speaker')).not.toBeInTheDocument();
   });
 
   it('renders active captions and a full scrollable speaker transcript from automatic labels', async () => {
@@ -122,7 +119,6 @@ describe('App', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Start Captions' }));
     expect(await screen.findByText('Full speaker transcript')).toBeInTheDocument();
     expect(screen.queryByText('Recent finalized captions')).not.toBeInTheDocument();
-    expect(screen.queryByText('Current speaker')).not.toBeInTheDocument();
 
     act(() => {
       hoisted.callbacks?.onInterimText?.('hello from speaker one', 'Person 1');

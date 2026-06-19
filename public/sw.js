@@ -1,13 +1,10 @@
-const CACHE_NAME = 'conversation-captioner-v2';
+const CACHE_NAME = 'conversation-captioner-v3';
 const APP_SHELL = [
   '/',
   '/index.html',
   '/manifest.webmanifest',
   '/icons/icon.svg',
   '/icons/apple-touch-icon.svg',
-  '/accessibility-demo.html',
-  '/accessibility-demo.css',
-  '/accessibility-demo.js',
 ];
 
 self.addEventListener('install', (event) => {
