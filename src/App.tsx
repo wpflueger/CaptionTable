@@ -17,6 +17,9 @@ const languageOptions = [
   { label: 'French (France)', value: 'fr-FR' },
 ];
 
+const speakerOptions = ['You', 'Person 1', 'Person 2', 'Person 3', 'Uncertain speaker'] as const;
+type SpeakerLabel = (typeof speakerOptions)[number];
+
 export function App() {
   const [captionState, setCaptionState] = useState<CaptionSessionState>(initialCaptionState);
   const [sessionState, setSessionState] = useState<SessionState>('idle');
@@ -27,6 +30,8 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [microphoneStatus, setMicrophoneStatus] = useState('Not started');
   const [volumePercent, setVolumePercent] = useState(0);
+  const [currentSpeaker, setCurrentSpeaker] = useState<SpeakerLabel>('You');
+  const [speakerByCaptionId, setSpeakerByCaptionId] = useState<Record<number, SpeakerLabel>>({});
   const activeCaptionRef = useRef<HTMLElement | null>(null);
   const stopVolumeMeterRef = useRef<(() => void) | null>(null);
 
@@ -55,6 +60,27 @@ export function App() {
     },
     [captionSession, lifecycle],
   );
+
+  useEffect(() => {
+    setSpeakerByCaptionId((existingLabels) => {
+      if (captionState.captions.length === 0) {
+        return Object.keys(existingLabels).length ? {} : existingLabels;
+      }
+
+      const latestId = captionState.captions.at(-1)?.id;
+      let changed = false;
+      const nextLabels = { ...existingLabels };
+
+      captionState.captions.forEach((caption) => {
+        if (!nextLabels[caption.id] || (!caption.finalized && caption.id === latestId)) {
+          nextLabels[caption.id] = currentSpeaker;
+          changed = true;
+        }
+      });
+
+      return changed ? nextLabels : existingLabels;
+    });
+  }, [captionState.captions, currentSpeaker]);
 
   const latestCaption = captionState.captions.at(-1) ?? null;
   const finalizedCaptions = captionState.captions.filter((caption) => caption.finalized).slice(-12).reverse();
@@ -148,7 +174,7 @@ export function App() {
             <h1 id="product-title">Conversation Captioner</h1>
             <p className="intro">
               Start a real browser speech-recognition session. Captions are generated from your device microphone when
-              browser support and permissions are available.
+              browser support and permissions are available. Choose the current speaker while captioning to label who said each caption.
             </p>
 
             {settingsOpen ? (
@@ -191,11 +217,32 @@ export function App() {
           </header>
 
           <article className="active-caption" aria-live="polite" ref={activeCaptionRef}>
+            <div className="active-speaker">{latestCaption ? (speakerByCaptionId[latestCaption.id] ?? currentSpeaker) : currentSpeaker}</div>
             <p style={{ fontSize: `clamp(${2.2 * captionScale}rem, ${6.5 * captionScale}vw, ${5.4 * captionScale}rem)` }}>
               {latestCaption?.text || 'Listening… captions will appear here when speech is detected.'}
             </p>
             {latestCaption && !latestCaption.finalized ? <span className="interim-badge">Interim</span> : null}
           </article>
+
+          <section className="speaker-controls" aria-labelledby="speaker-controls-heading">
+            <div>
+              <h2 id="speaker-controls-heading">Current speaker</h2>
+              <p>Chrome captions do not automatically identify speakers. Pick who is talking before or while they speak.</p>
+            </div>
+            <div className="speaker-button-row">
+              {speakerOptions.map((speaker) => (
+                <button
+                  key={speaker}
+                  className="speaker-button"
+                  type="button"
+                  aria-pressed={currentSpeaker === speaker}
+                  onClick={() => setCurrentSpeaker(speaker)}
+                >
+                  {speaker}
+                </button>
+              ))}
+            </div>
+          </section>
 
           <section className="caption-tools" aria-label="Caption controls">
             <label>
@@ -227,7 +274,7 @@ export function App() {
           <section className="turns-panel" aria-labelledby="recent-turns-heading">
             <h2 id="recent-turns-heading">Recent finalized captions</h2>
             <div className="turn-list">
-              {finalizedCaptions.length ? finalizedCaptions.map((caption) => <CaptionCard caption={caption} key={caption.id} />) : <p className="empty-state">No finalized captions yet.</p>}
+              {finalizedCaptions.length ? finalizedCaptions.map((caption) => <CaptionCard caption={caption} speaker={speakerByCaptionId[caption.id] ?? 'Uncertain speaker'} key={caption.id} />) : <p className="empty-state">No finalized captions yet.</p>}
             </div>
           </section>
         </section>
@@ -282,11 +329,11 @@ function StatusCard({ label, value, tone }: { label: string; value: string; tone
   );
 }
 
-function CaptionCard({ caption }: { caption: CaptionLine }) {
+function CaptionCard({ caption, speaker }: { caption: CaptionLine; speaker: SpeakerLabel }) {
   return (
     <article className="turn-card">
       <div>
-        <strong>Caption</strong>
+        <strong>{speaker}</strong>
         <span>#{caption.id}</span>
       </div>
       <p>{caption.text}</p>

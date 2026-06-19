@@ -55,6 +55,10 @@ languageSelect.addEventListener('change', (event) => {
 
 Calling `session.stop()` immediately stops the underlying speech engine and clears in-memory transcript state.
 
+## Speaker labels
+
+The browser Web Speech API provides transcription text but does not provide automatic speaker diarization. During a caption session, use the **Current speaker** controls (`You`, `Person 1`, `Person 2`, `Person 3`, or `Uncertain speaker`) to label who is speaking. The active caption and finalized caption history show the selected speaker label.
+
 ## Onboarding and voice enrollment
 
 The onboarding flow is intentionally short and contains four steps: language selection, microphone permission, text-size selection, and optional voice setup. Voice setup can be skipped, repeated, or deleted later from settings UI actions wired to the voice helpers.
