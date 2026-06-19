@@ -14,6 +14,8 @@ export interface CaptionSessionState {
   available: boolean;
   availabilityMessage: string | null;
   statusMessage: string | null;
+  audioChunksSent: number;
+  audioBytesSent: number;
 }
 
 export type CaptionSessionListener = (state: CaptionSessionState) => void;
@@ -31,6 +33,8 @@ export class CaptionSession {
     available: true,
     availabilityMessage: null,
     statusMessage: null,
+    audioChunksSent: 0,
+    audioBytesSent: 0,
   };
 
   constructor(engine: SpeechEngine) {
@@ -54,6 +58,10 @@ export class CaptionSession {
       },
       onStatusChange: (statusMessage) => {
         this.state = { ...this.state, statusMessage };
+        this.emit();
+      },
+      onAudioSend: ({ chunks, bytes }) => {
+        this.state = { ...this.state, audioChunksSent: chunks, audioBytesSent: bytes };
         this.emit();
       },
     });
@@ -136,6 +144,8 @@ export class CaptionSession {
       captions: [],
       error: null,
       statusMessage: null,
+      audioChunksSent: 0,
+      audioBytesSent: 0,
     };
   }
 

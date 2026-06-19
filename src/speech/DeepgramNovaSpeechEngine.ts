@@ -50,6 +50,8 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
   private socket: WebSocket | null = null;
   private keepAliveTimer: number | null = null;
   private sentFirstAudioChunk = false;
+  private audioChunksSent = 0;
+  private audioBytesSent = 0;
 
   constructor(options: DeepgramNovaSpeechEngineOptions) {
     this.apiKey = options.apiKey;
@@ -74,6 +76,8 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
 
     this.manuallyStopped = false;
     this.sentFirstAudioChunk = false;
+    this.audioChunksSent = 0;
+    this.audioBytesSent = 0;
     this.callbacks.onAvailabilityChange?.({ available: true });
     this.callbacks.onStatusChange?.('Connecting to Deepgram Nova…');
 
@@ -146,9 +150,14 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
         this.recorder.ondataavailable = (event) => {
           if (event.data.size > 0 && this.socket?.readyState === WebSocket.OPEN) {
             this.socket.send(event.data);
+            this.audioChunksSent += 1;
+            this.audioBytesSent += event.data.size;
+            this.callbacks.onAudioSend?.({ chunks: this.audioChunksSent, bytes: this.audioBytesSent });
             if (!this.sentFirstAudioChunk) {
               this.sentFirstAudioChunk = true;
               this.callbacks.onStatusChange?.('Audio is streaming to Deepgram. Waiting for transcript…');
+            } else if (this.audioChunksSent % 20 === 0) {
+              this.callbacks.onStatusChange?.(`Audio is streaming to Deepgram (${this.audioChunksSent} chunks, ${Math.round(this.audioBytesSent / 1024)} KB). Waiting for transcript…`);
             }
           }
         };

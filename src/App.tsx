@@ -14,6 +14,8 @@ const initialCaptionState: CaptionSessionState = {
   available: true,
   availabilityMessage: null,
   statusMessage: null,
+  audioChunksSent: 0,
+  audioBytesSent: 0,
 };
 
 const languageOptions = [
@@ -235,6 +237,13 @@ export function App() {
             {latestCaption && !latestCaption.finalized ? <span className="interim-badge">Interim</span> : null}
           </article>
 
+          <section className="deepgram-diagnostics" aria-live="polite" aria-atomic="true">
+            <strong>Deepgram status</strong>
+            <span>{captionState.statusMessage ?? 'Starting Deepgram…'}</span>
+            <span>Mic level: {volumePercent}%</span>
+            <span>Audio sent: {captionState.audioChunksSent} chunks / {Math.round(captionState.audioBytesSent / 1024)} KB</span>
+          </section>
+
           <section className="caption-tools" aria-label="Caption controls">
             <label>
               Text size
@@ -257,7 +266,6 @@ export function App() {
 
           <section className="session-notices" aria-live="polite" aria-atomic="true">
             <p>{microphoneStatus}</p>
-            <p>{captionState.statusMessage ?? 'Starting Deepgram…'}</p>
             <p>Session: {sessionState}. Wake lock: {wakeLocked ? 'on' : 'off'}.</p>
             {guidance ? <Notice>{guidance}</Notice> : null}
             {captionState.error ? <Notice tone="error">{captionState.error.message}</Notice> : null}

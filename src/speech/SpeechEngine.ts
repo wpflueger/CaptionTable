@@ -22,6 +22,7 @@ export interface SpeechEngineCallbacks {
   onAvailabilityChange?: (availability: SpeechAvailability) => void;
   onActiveChange?: (active: boolean) => void;
   onStatusChange?: (message: string) => void;
+  onAudioSend?: (stats: { chunks: number; bytes: number }) => void;
 }
 
 export interface SpeechEngine {

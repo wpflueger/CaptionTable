@@ -80,6 +80,9 @@ h1 { margin: 0; font-size: clamp(2.6rem, 9vw, 6.8rem); line-height: 0.95; }
 .active-caption { min-height: 38vh; display: grid; place-items: center; gap: 1rem; padding: clamp(1rem, 4vw, 3rem); border-radius: 28px; background: #f8fbff; color: #06111f; }
 .active-speaker { justify-self: start; align-self: start; padding: 0.55rem 0.9rem; border-radius: 999px; background: #06111f; color: #dbeafe; font-size: clamp(1rem, 2vw, 1.35rem); font-weight: 900; }
 .active-caption p { margin: 0; max-width: 1000px; font-weight: 900; line-height: 1.08; text-align: center; }
+.deepgram-diagnostics { display: grid; gap: 0.35rem; padding: 1rem; border-radius: 22px; background: rgba(134, 239, 172, 0.1); border: 1px solid rgba(134, 239, 172, 0.28); color: #dfffea; }
+.deepgram-diagnostics strong { color: #86efac; }
+.deepgram-diagnostics span { overflow-wrap: anywhere; }
 .caption-tools { padding: 1rem; border-radius: 22px; background: rgba(255, 255, 255, 0.08); }
 .caption-tools label { display: flex; align-items: center; gap: 1rem; font-weight: 800; }
 .caption-tools input { accent-color: #86efac; min-width: 160px; }
@@ -104,14 +107,14 @@ h1 { margin: 0; font-size: clamp(2.6rem, 9vw, 6.8rem); line-height: 0.95; }
 @media (min-width: 700px) {
   .readiness-grid { grid-template-columns: repeat(3, 1fr); }
   .caption-screen { grid-template-columns: 1.35fr 0.65fr; }
-  .caption-header, .active-caption, .caption-tools { grid-column: 1 / -1; }
+  .caption-header, .active-caption, .deepgram-diagnostics, .caption-tools { grid-column: 1 / -1; }
   .turns-panel { grid-column: 1 / -1; }
   .turn-list { grid-template-columns: 1fr; }
 }
 
 @media (min-width: 1050px) {
   .caption-screen { grid-template-columns: minmax(0, 1fr) 360px; align-items: start; }
-  .caption-header, .active-caption, .caption-tools { grid-column: 1; }
+  .caption-header, .active-caption, .deepgram-diagnostics, .caption-tools { grid-column: 1; }
   .turns-panel { grid-column: 2; grid-row: 1 / span 3; }
   .turn-list { grid-template-columns: 1fr; }
   .active-caption { min-height: 58vh; }
