@@ -1,0 +1,18 @@
+.caption-session {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.caption-line {
+  min-height: 1.5em;
+  overflow-wrap: anywhere;
+}
+
+.caption-line--interim {
+  opacity: 0.72;
+  font-style: italic;
+}
+
+.caption-error {
+  color: #b42318;
+}
