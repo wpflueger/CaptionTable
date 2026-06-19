@@ -57,19 +57,27 @@ Calling `session.stop()` immediately stops the underlying speech engine and clea
 
 ## Automatic speaker identification
 
-Automatic speaker identification requires a diarization-capable speech backend. Configure Azure Speech Conversation Transcription with Vite environment variables:
+Automatic speaker identification requires a diarization-capable speech backend. The preferred local-development backend is Deepgram Nova live transcription with diarization:
 
 ```bash
 cp .env.example .env.local
 # Fill in:
-# VITE_AZURE_SPEECH_KEY=...
-# VITE_AZURE_SPEECH_REGION=...
+# VITE_DEEPGRAM_API_KEY=...
 npm run dev
 ```
 
-When those variables are present, the app uses Azure Conversation Transcription and finalized captions show automatic speaker labels such as `Person 1`, `Person 2`, etc.
+When `VITE_DEEPGRAM_API_KEY` is present, the app uses Deepgram Nova and finalized captions show automatic speaker labels such as `Person 1`, `Person 2`, etc.
 
-Without those variables, the app falls back to Chrome Web Speech. Chrome Web Speech can transcribe audio but does **not** provide automatic speaker diarization, so the fallback cannot be a fully set-and-forget speaker-identification experience.
+Azure Speech Conversation Transcription is also supported as an alternate backend:
+
+```bash
+VITE_AZURE_SPEECH_KEY=...
+VITE_AZURE_SPEECH_REGION=...
+```
+
+Without Deepgram or Azure credentials, the app falls back to Chrome Web Speech. Chrome Web Speech can transcribe audio but does **not** provide automatic speaker diarization, so the fallback cannot be a fully set-and-forget speaker-identification experience.
+
+Do not ship long-lived provider API keys in a public browser app. The `VITE_*` keys are intended for local development; production should use a short-lived token endpoint or backend proxy.
 
 ## Onboarding and voice enrollment
 

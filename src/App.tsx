@@ -5,6 +5,7 @@ import {
   CaptionLine,
   CaptionSession,
   CaptionSessionState,
+  DeepgramNovaSpeechEngine,
 } from './speech';
 import { SessionGuidance, SessionLifecycle, SessionState } from './session';
 
@@ -26,9 +27,11 @@ const languageOptions = [
 const speakerOptions = ['You', 'Person 1', 'Person 2', 'Person 3', 'Uncertain speaker'] as const;
 type SpeakerLabel = string;
 
+const deepgramApiKey = import.meta.env.VITE_DEEPGRAM_API_KEY as string | undefined;
 const azureSpeechKey = import.meta.env.VITE_AZURE_SPEECH_KEY as string | undefined;
 const azureSpeechRegion = import.meta.env.VITE_AZURE_SPEECH_REGION as string | undefined;
-const automaticSpeakerIdEnabled = Boolean(azureSpeechKey && azureSpeechRegion);
+const speechBackend = deepgramApiKey ? 'Deepgram Nova' : azureSpeechKey && azureSpeechRegion ? 'Azure Speech' : 'Chrome Web Speech';
+const automaticSpeakerIdEnabled = speechBackend !== 'Chrome Web Speech';
 
 export function App() {
   const [captionState, setCaptionState] = useState<CaptionSessionState>(initialCaptionState);
@@ -48,9 +51,11 @@ export function App() {
   const captionSession = useMemo(
     () =>
       new CaptionSession(
-        automaticSpeakerIdEnabled
-          ? new AzureConversationTranscriberEngine({ speechKey: azureSpeechKey!, region: azureSpeechRegion!, language })
-          : new BrowserSpeechEngine(language),
+        deepgramApiKey
+          ? new DeepgramNovaSpeechEngine({ apiKey: deepgramApiKey, language, model: 'nova-3' })
+          : azureSpeechKey && azureSpeechRegion
+            ? new AzureConversationTranscriberEngine({ speechKey: azureSpeechKey, region: azureSpeechRegion, language })
+            : new BrowserSpeechEngine(language),
       ),
     [],
   );
@@ -211,7 +216,7 @@ export function App() {
                 value={captionState.available ? 'Browser supported' : 'Unavailable'}
                 tone="microphone"
               />
-              <StatusCard label="Speaker identification" value={automaticSpeakerIdEnabled ? 'Automatic' : 'Manual fallback'} tone="offline" />
+              <StatusCard label="Speech backend" value={speechBackend} tone="offline" />
             </div>
 
             {captionState.availabilityMessage ? <Notice>{captionState.availabilityMessage}</Notice> : null}
@@ -247,7 +252,7 @@ export function App() {
               <h2 id="speaker-controls-heading">Speaker identification</h2>
               <p>
                 {automaticSpeakerIdEnabled
-                  ? 'Automatic diarization is enabled. Speaker labels come from the speech backend.'
+                  ? `Automatic diarization is enabled with ${speechBackend}. Speaker labels come from the speech backend.`
                   : 'Automatic diarization requires Azure Speech credentials. This local Chrome fallback cannot infer speakers automatically.'}
               </p>
             </div>
