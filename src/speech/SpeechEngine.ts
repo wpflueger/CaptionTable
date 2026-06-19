@@ -21,6 +21,7 @@ export interface SpeechEngineCallbacks {
   onError?: (error: SpeechErrorState) => void;
   onAvailabilityChange?: (availability: SpeechAvailability) => void;
   onActiveChange?: (active: boolean) => void;
+  onStatusChange?: (message: string) => void;
 }
 
 export interface SpeechEngine {

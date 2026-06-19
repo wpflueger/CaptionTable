@@ -13,6 +13,7 @@ const initialCaptionState: CaptionSessionState = {
   error: null,
   available: true,
   availabilityMessage: null,
+  statusMessage: null,
 };
 
 const languageOptions = [
@@ -256,6 +257,7 @@ export function App() {
 
           <section className="session-notices" aria-live="polite" aria-atomic="true">
             <p>{microphoneStatus}</p>
+            <p>{captionState.statusMessage ?? 'Starting Deepgram…'}</p>
             <p>Session: {sessionState}. Wake lock: {wakeLocked ? 'on' : 'off'}.</p>
             {guidance ? <Notice>{guidance}</Notice> : null}
             {captionState.error ? <Notice tone="error">{captionState.error.message}</Notice> : null}

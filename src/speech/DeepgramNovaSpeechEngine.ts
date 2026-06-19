@@ -20,6 +20,9 @@ type DeepgramWord = {
 
 type DeepgramMessage = {
   type?: string;
+  error?: string;
+  reason?: string;
+  description?: string;
   is_final?: boolean;
   speech_final?: boolean;
   channel?: {
@@ -46,6 +49,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
   private recorder: MediaRecorder | null = null;
   private socket: WebSocket | null = null;
   private keepAliveTimer: number | null = null;
+  private sentFirstAudioChunk = false;
 
   constructor(options: DeepgramNovaSpeechEngineOptions) {
     this.apiKey = options.apiKey;
@@ -69,7 +73,9 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     }
 
     this.manuallyStopped = false;
+    this.sentFirstAudioChunk = false;
     this.callbacks.onAvailabilityChange?.({ available: true });
+    this.callbacks.onStatusChange?.('Connecting to Deepgram Nova…');
 
     void this.open();
   }
@@ -124,6 +130,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
         smart_format: 'true',
         punctuate: 'true',
         endpointing: '300',
+        vad_events: 'true',
       });
 
       this.socket = new WebSocket(`wss://api.deepgram.com/v1/listen?${params.toString()}`, ['token', this.apiKey]);
@@ -134,10 +141,15 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
 
         this.active = true;
         this.callbacks.onActiveChange?.(true);
+        this.callbacks.onStatusChange?.('Connected to Deepgram. Waiting for speech…');
         this.recorder = new MediaRecorder(this.stream, mimeType ? { mimeType } : undefined);
         this.recorder.ondataavailable = (event) => {
           if (event.data.size > 0 && this.socket?.readyState === WebSocket.OPEN) {
             this.socket.send(event.data);
+            if (!this.sentFirstAudioChunk) {
+              this.sentFirstAudioChunk = true;
+              this.callbacks.onStatusChange?.('Audio is streaming to Deepgram. Waiting for transcript…');
+            }
           }
         };
         this.recorder.onerror = (event) => {
@@ -150,6 +162,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
       this.socket.onerror = (event) => {
         this.active = false;
         this.callbacks.onActiveChange?.(false);
+        this.callbacks.onStatusChange?.('Deepgram connection error.');
         this.emitError({ code: 'connectivity-loss', message: SPEECH_ERROR_MESSAGES['connectivity-loss'], cause: event });
       };
       this.socket.onclose = () => {
@@ -157,12 +170,14 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
         this.callbacks.onActiveChange?.(false);
         this.clearKeepAlive();
         if (!this.manuallyStopped) {
+          this.callbacks.onStatusChange?.('Deepgram connection closed unexpectedly.');
           this.emitError({ code: 'connectivity-loss', message: SPEECH_ERROR_MESSAGES['connectivity-loss'] });
         }
       };
     } catch (error) {
       this.active = false;
       this.callbacks.onActiveChange?.(false);
+      this.callbacks.onStatusChange?.('Could not start microphone capture.');
       this.emitError({ code: 'microphone-permission', message: SPEECH_ERROR_MESSAGES['microphone-permission'], cause: error });
     }
   }
@@ -178,6 +193,26 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     } catch {
       return;
     }
+    if (message.type === 'Metadata') {
+      this.callbacks.onStatusChange?.('Deepgram stream is ready. Speak clearly near the microphone.');
+      return;
+    }
+
+    if (message.type === 'SpeechStarted') {
+      this.callbacks.onStatusChange?.('Speech detected. Transcribing…');
+      return;
+    }
+
+    if (message.type === 'Error') {
+      this.callbacks.onStatusChange?.('Deepgram returned an error.');
+      this.emitError({
+        code: 'processing-failure',
+        message: message.description || message.reason || message.error || SPEECH_ERROR_MESSAGES['processing-failure'],
+        cause: message,
+      });
+      return;
+    }
+
     if (message.type && message.type !== 'Results') {
       return;
     }
@@ -188,6 +223,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
       return;
     }
 
+    this.callbacks.onStatusChange?.(message.is_final || message.speech_final ? 'Final transcript received.' : 'Live transcript received.');
     const speakerSegments = this.getSpeakerSegments(alternative?.words ?? [], text);
     speakerSegments.forEach((segment) => {
       if (message.is_final || message.speech_final) {

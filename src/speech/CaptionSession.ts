@@ -13,6 +13,7 @@ export interface CaptionSessionState {
   error: SpeechErrorState | null;
   available: boolean;
   availabilityMessage: string | null;
+  statusMessage: string | null;
 }
 
 export type CaptionSessionListener = (state: CaptionSessionState) => void;
@@ -29,6 +30,7 @@ export class CaptionSession {
     error: null,
     available: true,
     availabilityMessage: null,
+    statusMessage: null,
   };
 
   constructor(engine: SpeechEngine) {
@@ -48,6 +50,10 @@ export class CaptionSession {
       },
       onActiveChange: (active) => {
         this.state = { ...this.state, active, error: active ? null : this.state.error };
+        this.emit();
+      },
+      onStatusChange: (statusMessage) => {
+        this.state = { ...this.state, statusMessage };
         this.emit();
       },
     });
@@ -129,6 +135,7 @@ export class CaptionSession {
       active: false,
       captions: [],
       error: null,
+      statusMessage: null,
     };
   }
 
