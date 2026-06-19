@@ -23,12 +23,8 @@ const languageOptions = [
   { label: 'French (France)', value: 'fr-FR' },
 ];
 
-const speakerOptions = ['You', 'Person 1', 'Person 2', 'Person 3', 'Uncertain speaker'] as const;
-type SpeakerLabel = string;
-
 const deepgramApiKey = import.meta.env.VITE_DEEPGRAM_API_KEY as string | undefined;
-const speechBackend = deepgramApiKey ? 'Deepgram Nova' : 'Chrome Web Speech';
-const automaticSpeakerIdEnabled = speechBackend === 'Deepgram Nova';
+const automaticSpeakerIdEnabled = Boolean(deepgramApiKey);
 
 export function App() {
   const [captionState, setCaptionState] = useState<CaptionSessionState>(initialCaptionState);
@@ -40,9 +36,8 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [microphoneStatus, setMicrophoneStatus] = useState('Not started');
   const [volumePercent, setVolumePercent] = useState(0);
-  const [currentSpeaker, setCurrentSpeaker] = useState<SpeakerLabel>('You');
-  const [speakerByCaptionId, setSpeakerByCaptionId] = useState<Record<number, SpeakerLabel>>({});
   const activeCaptionRef = useRef<HTMLElement | null>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
   const stopVolumeMeterRef = useRef<(() => void) | null>(null);
 
   const captionSession = useMemo(
@@ -80,32 +75,19 @@ export function App() {
   );
 
   useEffect(() => {
-    setSpeakerByCaptionId((existingLabels) => {
-      if (captionState.captions.length === 0) {
-        return Object.keys(existingLabels).length ? {} : existingLabels;
-      }
-
-      const latestId = captionState.captions.at(-1)?.id;
-      let changed = false;
-      const nextLabels = { ...existingLabels };
-
-      captionState.captions.forEach((caption) => {
-        const label = caption.speakerLabel ?? currentSpeaker;
-        if (!nextLabels[caption.id] || (!caption.finalized && caption.id === latestId)) {
-          nextLabels[caption.id] = label;
-          changed = true;
-        }
-      });
-
-      return changed ? nextLabels : existingLabels;
-    });
-  }, [captionState.captions, currentSpeaker]);
+    transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: 'smooth' });
+  }, [captionState.captions]);
 
   const latestCaption = captionState.captions.at(-1) ?? null;
-  const finalizedCaptions = captionState.captions.filter((caption) => caption.finalized).slice(-12).reverse();
+  const transcriptCaptions = captionState.captions;
   const selectedLanguageLabel = languageOptions.find((option) => option.value === language)?.label ?? language;
 
   async function startCaptions() {
+    if (!deepgramApiKey) {
+      setMicrophoneStatus('Deepgram API key is missing. Add VITE_DEEPGRAM_API_KEY to .env.local and restart npm run dev.');
+      return;
+    }
+
     setGuidance(null);
     setMicrophoneStatus('Requesting microphone access…');
     await lifecycle.start();
@@ -192,7 +174,7 @@ export function App() {
             <p className="eyebrow">Installable caption display</p>
             <h1 id="product-title">Conversation Captioner</h1>
             <p className="intro">
-              Start a real speech-recognition session. {automaticSpeakerIdEnabled ? 'Automatic speaker identification is enabled.' : 'Automatic speaker identification is not configured, so Chrome Web Speech can only provide transcription text.'}
+              Set-and-forget live captions with Deepgram Nova automatic speaker identification and a full speaker-labeled transcript.
             </p>
 
             {settingsOpen ? (
@@ -207,17 +189,22 @@ export function App() {
             <div className="readiness-grid" aria-label="Caption readiness">
               <StatusCard label="Current language" value={selectedLanguageLabel} tone="language" />
               <StatusCard
-                label="Speech recognition"
-                value={captionState.available ? 'Browser supported' : 'Unavailable'}
+                label="Speaker identification"
+                value={automaticSpeakerIdEnabled ? 'Automatic with Deepgram Nova' : 'Deepgram key missing'}
                 tone="microphone"
               />
-              <StatusCard label="Speech backend" value={speechBackend} tone="offline" />
+              <StatusCard label="Transcript" value="Full scrollable history" tone="offline" />
             </div>
 
+            {!automaticSpeakerIdEnabled ? (
+              <Notice tone="error">
+                Add <code>VITE_DEEPGRAM_API_KEY</code> to <code>.env.local</code> and restart <code>npm run dev</code> to enable automatic speaker identification.
+              </Notice>
+            ) : null}
             {captionState.availabilityMessage ? <Notice>{captionState.availabilityMessage}</Notice> : null}
             {captionState.error ? <Notice tone="error">{captionState.error.message}</Notice> : null}
 
-            <button className="primary-action" type="button" onClick={() => void startCaptions()}>
+            <button className="primary-action" type="button" onClick={() => void startCaptions()} disabled={!automaticSpeakerIdEnabled}>
               Start Captions
             </button>
           </div>
@@ -235,38 +222,12 @@ export function App() {
           </header>
 
           <article className="active-caption" aria-live="polite" ref={activeCaptionRef}>
-            <div className="active-speaker">{latestCaption ? (speakerByCaptionId[latestCaption.id] ?? currentSpeaker) : currentSpeaker}</div>
+            <div className="active-speaker">{getSpeakerLabel(latestCaption)}</div>
             <p style={{ fontSize: `clamp(${2.2 * captionScale}rem, ${6.5 * captionScale}vw, ${5.4 * captionScale}rem)` }}>
               {latestCaption?.text || 'Listening… captions will appear here when speech is detected.'}
             </p>
             {latestCaption && !latestCaption.finalized ? <span className="interim-badge">Interim</span> : null}
           </article>
-
-          <section className="speaker-controls" aria-labelledby="speaker-controls-heading">
-            <div>
-              <h2 id="speaker-controls-heading">Speaker identification</h2>
-              <p>
-                {automaticSpeakerIdEnabled
-                  ? `Automatic diarization is enabled with ${speechBackend}. Speaker labels come from the speech backend.`
-                  : 'Automatic diarization requires a Deepgram API key. This local Chrome fallback cannot infer speakers automatically.'}
-              </p>
-            </div>
-            {!automaticSpeakerIdEnabled ? (
-              <div className="speaker-button-row">
-                {speakerOptions.map((speaker) => (
-                  <button
-                    key={speaker}
-                    className="speaker-button"
-                    type="button"
-                    aria-pressed={currentSpeaker === speaker}
-                    onClick={() => setCurrentSpeaker(speaker)}
-                  >
-                    {speaker}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </section>
 
           <section className="caption-tools" aria-label="Caption controls">
             <label>
@@ -283,8 +244,8 @@ export function App() {
             <div className="meter" aria-label={`Microphone volume ${volumePercent}%`}>
               <span style={{ width: `${volumePercent}%` }} />
             </div>
-            <button className="secondary-action" type="button" onClick={() => activeCaptionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>
-              Return to latest
+            <button className="secondary-action" type="button" onClick={() => transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight, behavior: 'smooth' })}>
+              Latest transcript
             </button>
           </section>
 
@@ -295,10 +256,14 @@ export function App() {
             {captionState.error ? <Notice tone="error">{captionState.error.message}</Notice> : null}
           </section>
 
-          <section className="turns-panel" aria-labelledby="recent-turns-heading">
-            <h2 id="recent-turns-heading">Recent finalized captions</h2>
-            <div className="turn-list">
-              {finalizedCaptions.length ? finalizedCaptions.map((caption) => <CaptionCard caption={caption} speaker={speakerByCaptionId[caption.id] ?? 'Uncertain speaker'} key={caption.id} />) : <p className="empty-state">No finalized captions yet.</p>}
+          <section className="turns-panel transcript-panel" aria-labelledby="transcript-heading">
+            <h2 id="transcript-heading">Full speaker transcript</h2>
+            <div className="turn-list transcript-list" ref={transcriptRef}>
+              {transcriptCaptions.length ? (
+                transcriptCaptions.map((caption) => <CaptionCard caption={caption} key={caption.id} />)
+              ) : (
+                <p className="empty-state">No captions yet. Start speaking and the transcript will appear here.</p>
+              )}
             </div>
           </section>
         </section>
@@ -353,16 +318,20 @@ function StatusCard({ label, value, tone }: { label: string; value: string; tone
   );
 }
 
-function CaptionCard({ caption, speaker }: { caption: CaptionLine; speaker: SpeakerLabel }) {
+function CaptionCard({ caption }: { caption: CaptionLine }) {
   return (
-    <article className="turn-card">
+    <article className="turn-card" data-finalized={caption.finalized}>
       <div>
-        <strong>{speaker}</strong>
-        <span>#{caption.id}</span>
+        <strong>{getSpeakerLabel(caption)}</strong>
+        <span>{caption.finalized ? `#${caption.id}` : 'Live'}</span>
       </div>
       <p>{caption.text}</p>
     </article>
   );
+}
+
+function getSpeakerLabel(caption: CaptionLine | null): string {
+  return caption?.speakerLabel || 'Identifying speaker';
 }
 
 function Notice({ children, tone = 'info' }: { children: React.ReactNode; tone?: 'info' | 'error' }) {
