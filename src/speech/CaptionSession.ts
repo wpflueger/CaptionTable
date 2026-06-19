@@ -41,6 +41,7 @@ export class CaptionSession {
           ...this.state,
           available: availability.available,
           availabilityMessage: availability.message ?? null,
+          error: availability.available ? null : this.state.error,
         };
         this.emit();
       },
@@ -50,7 +51,7 @@ export class CaptionSession {
   start(): void {
     this.clearSessionState();
     this.engine.start();
-    this.state = { ...this.state, active: this.engine.isActive() };
+    this.state = { ...this.state, active: this.engine.isActive(), error: this.engine.isActive() ? null : this.state.error };
     this.emit();
   }
 

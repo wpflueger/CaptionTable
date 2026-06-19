@@ -139,9 +139,18 @@ export class BrowserSpeechEngine implements SpeechEngine {
       return;
     }
 
+    const code = this.mapError(event.error);
+    this.emitError(code, event);
+
+    if (code === 'connectivity-loss' || code === 'processing-failure') {
+      this.active = false;
+      this.manuallyStopped = false;
+      this.scheduleRestart();
+      return;
+    }
+
     this.manuallyStopped = true;
     this.active = false;
-    this.emitError(this.mapError(event.error), event);
   };
 
   private handleEnd = (): void => {
@@ -149,10 +158,7 @@ export class BrowserSpeechEngine implements SpeechEngine {
     this.recognition = null;
 
     if (!this.manuallyStopped) {
-      this.restartTimer = window.setTimeout(() => {
-        this.restartTimer = null;
-        this.start();
-      }, 250);
+      this.scheduleRestart();
     }
   };
 
@@ -168,6 +174,17 @@ export class BrowserSpeechEngine implements SpeechEngine {
       default:
         return 'processing-failure';
     }
+  }
+
+  private scheduleRestart(delayMs = 750): void {
+    if (this.restartTimer !== null) {
+      return;
+    }
+
+    this.restartTimer = window.setTimeout(() => {
+      this.restartTimer = null;
+      this.start();
+    }, delayMs);
   }
 
   private clearRestartTimer(): void {

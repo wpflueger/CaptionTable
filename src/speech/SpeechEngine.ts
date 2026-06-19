@@ -33,6 +33,6 @@ export interface SpeechEngine {
 export const SPEECH_ERROR_MESSAGES: Record<SpeechErrorCode, string> = {
   'microphone-permission': 'Microphone access was blocked. Allow microphone permission and try again.',
   'transcription-unavailable': 'Speech transcription is not available in this browser.',
-  'connectivity-loss': 'Speech transcription lost its network connection. Check your connection and try again.',
+  'connectivity-loss': 'Speech transcription service connection was interrupted. I’m retrying automatically; if it keeps happening, try Chrome/Edge, disable VPN/firewall filtering, or reload the page.',
   'processing-failure': 'Speech transcription could not process the audio. Please try again.',
 };
