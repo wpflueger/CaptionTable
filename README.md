@@ -55,9 +55,21 @@ languageSelect.addEventListener('change', (event) => {
 
 Calling `session.stop()` immediately stops the underlying speech engine and clears in-memory transcript state.
 
-## Speaker labels
+## Automatic speaker identification
 
-The browser Web Speech API provides transcription text but does not provide automatic speaker diarization. During a caption session, use the **Current speaker** controls (`You`, `Person 1`, `Person 2`, `Person 3`, or `Uncertain speaker`) to label who is speaking. The active caption and finalized caption history show the selected speaker label.
+Automatic speaker identification requires a diarization-capable speech backend. Configure Azure Speech Conversation Transcription with Vite environment variables:
+
+```bash
+cp .env.example .env.local
+# Fill in:
+# VITE_AZURE_SPEECH_KEY=...
+# VITE_AZURE_SPEECH_REGION=...
+npm run dev
+```
+
+When those variables are present, the app uses Azure Conversation Transcription and finalized captions show automatic speaker labels such as `Person 1`, `Person 2`, etc.
+
+Without those variables, the app falls back to Chrome Web Speech. Chrome Web Speech can transcribe audio but does **not** provide automatic speaker diarization, so the fallback cannot be a fully set-and-forget speaker-identification experience.
 
 ## Onboarding and voice enrollment
 

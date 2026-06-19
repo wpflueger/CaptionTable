@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BrowserSpeechEngine, CaptionLine, CaptionSession, CaptionSessionState } from './speech';
+import {
+  AzureConversationTranscriberEngine,
+  BrowserSpeechEngine,
+  CaptionLine,
+  CaptionSession,
+  CaptionSessionState,
+} from './speech';
 import { SessionGuidance, SessionLifecycle, SessionState } from './session';
 
 const initialCaptionState: CaptionSessionState = {
@@ -18,7 +24,11 @@ const languageOptions = [
 ];
 
 const speakerOptions = ['You', 'Person 1', 'Person 2', 'Person 3', 'Uncertain speaker'] as const;
-type SpeakerLabel = (typeof speakerOptions)[number];
+type SpeakerLabel = string;
+
+const azureSpeechKey = import.meta.env.VITE_AZURE_SPEECH_KEY as string | undefined;
+const azureSpeechRegion = import.meta.env.VITE_AZURE_SPEECH_REGION as string | undefined;
+const automaticSpeakerIdEnabled = Boolean(azureSpeechKey && azureSpeechRegion);
 
 export function App() {
   const [captionState, setCaptionState] = useState<CaptionSessionState>(initialCaptionState);
@@ -35,7 +45,15 @@ export function App() {
   const activeCaptionRef = useRef<HTMLElement | null>(null);
   const stopVolumeMeterRef = useRef<(() => void) | null>(null);
 
-  const captionSession = useMemo(() => new CaptionSession(new BrowserSpeechEngine(language)), []);
+  const captionSession = useMemo(
+    () =>
+      new CaptionSession(
+        automaticSpeakerIdEnabled
+          ? new AzureConversationTranscriberEngine({ speechKey: azureSpeechKey!, region: azureSpeechRegion!, language })
+          : new BrowserSpeechEngine(language),
+      ),
+    [],
+  );
   const lifecycle = useMemo(
     () =>
       new SessionLifecycle({
@@ -72,8 +90,9 @@ export function App() {
       const nextLabels = { ...existingLabels };
 
       captionState.captions.forEach((caption) => {
+        const label = caption.speakerLabel ?? currentSpeaker;
         if (!nextLabels[caption.id] || (!caption.finalized && caption.id === latestId)) {
-          nextLabels[caption.id] = currentSpeaker;
+          nextLabels[caption.id] = label;
           changed = true;
         }
       });
@@ -173,8 +192,7 @@ export function App() {
             <p className="eyebrow">Installable caption display</p>
             <h1 id="product-title">Conversation Captioner</h1>
             <p className="intro">
-              Start a real browser speech-recognition session. Captions are generated from your device microphone when
-              browser support and permissions are available. Choose the current speaker while captioning to label who said each caption.
+              Start a real speech-recognition session. {automaticSpeakerIdEnabled ? 'Automatic speaker identification is enabled.' : 'Automatic speaker identification is not configured, so Chrome Web Speech can only provide transcription text.'}
             </p>
 
             {settingsOpen ? (
@@ -193,7 +211,7 @@ export function App() {
                 value={captionState.available ? 'Browser supported' : 'Unavailable'}
                 tone="microphone"
               />
-              <StatusCard label="Offline readiness" value="App shell available" tone="offline" />
+              <StatusCard label="Speaker identification" value={automaticSpeakerIdEnabled ? 'Automatic' : 'Manual fallback'} tone="offline" />
             </div>
 
             {captionState.availabilityMessage ? <Notice>{captionState.availabilityMessage}</Notice> : null}
@@ -226,22 +244,28 @@ export function App() {
 
           <section className="speaker-controls" aria-labelledby="speaker-controls-heading">
             <div>
-              <h2 id="speaker-controls-heading">Current speaker</h2>
-              <p>Chrome captions do not automatically identify speakers. Pick who is talking before or while they speak.</p>
+              <h2 id="speaker-controls-heading">Speaker identification</h2>
+              <p>
+                {automaticSpeakerIdEnabled
+                  ? 'Automatic diarization is enabled. Speaker labels come from the speech backend.'
+                  : 'Automatic diarization requires Azure Speech credentials. This local Chrome fallback cannot infer speakers automatically.'}
+              </p>
             </div>
-            <div className="speaker-button-row">
-              {speakerOptions.map((speaker) => (
-                <button
-                  key={speaker}
-                  className="speaker-button"
-                  type="button"
-                  aria-pressed={currentSpeaker === speaker}
-                  onClick={() => setCurrentSpeaker(speaker)}
-                >
-                  {speaker}
-                </button>
-              ))}
-            </div>
+            {!automaticSpeakerIdEnabled ? (
+              <div className="speaker-button-row">
+                {speakerOptions.map((speaker) => (
+                  <button
+                    key={speaker}
+                    className="speaker-button"
+                    type="button"
+                    aria-pressed={currentSpeaker === speaker}
+                    onClick={() => setCurrentSpeaker(speaker)}
+                  >
+                    {speaker}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </section>
 
           <section className="caption-tools" aria-label="Caption controls">

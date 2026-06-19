@@ -4,6 +4,7 @@ export interface CaptionLine {
   id: number;
   text: string;
   finalized: boolean;
+  speakerLabel?: string;
 }
 
 export interface CaptionSessionState {
@@ -33,8 +34,8 @@ export class CaptionSession {
   constructor(engine: SpeechEngine) {
     this.engine = engine;
     this.engine.setCallbacks({
-      onInterimText: (text) => this.setInterimText(text),
-      onFinalText: (text) => this.addFinalText(text),
+      onInterimText: (text, speakerLabel) => this.setInterimText(text, speakerLabel),
+      onFinalText: (text, speakerLabel) => this.addFinalText(text, speakerLabel),
       onError: (error) => this.setError(error),
       onAvailabilityChange: (availability) => {
         this.state = {
@@ -78,24 +79,24 @@ export class CaptionSession {
     };
   }
 
-  private setInterimText(text: string): void {
+  private setInterimText(text: string, speakerLabel?: string): void {
     if (!this.state.active) {
       return;
     }
 
     this.interimCaption = text
-      ? { id: this.interimCaption?.id ?? this.nextCaptionId++, text, finalized: false }
+      ? { id: this.interimCaption?.id ?? this.nextCaptionId++, text, finalized: false, speakerLabel }
       : null;
     this.publishCaptions();
   }
 
-  private addFinalText(text: string): void {
+  private addFinalText(text: string, speakerLabel?: string): void {
     if (!this.state.active || !text) {
       return;
     }
 
     const id = this.interimCaption?.id ?? this.nextCaptionId++;
-    this.finalizedCaptions = [...this.finalizedCaptions, { id, text, finalized: true }];
+    this.finalizedCaptions = [...this.finalizedCaptions, { id, text, finalized: true, speakerLabel: speakerLabel ?? this.interimCaption?.speakerLabel }];
     this.interimCaption = null;
     this.publishCaptions();
   }

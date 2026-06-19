@@ -16,8 +16,8 @@ export interface SpeechAvailability {
 }
 
 export interface SpeechEngineCallbacks {
-  onInterimText?: (text: string) => void;
-  onFinalText?: (text: string) => void;
+  onInterimText?: (text: string, speakerLabel?: string) => void;
+  onFinalText?: (text: string, speakerLabel?: string) => void;
   onError?: (error: SpeechErrorState) => void;
   onAvailabilityChange?: (availability: SpeechAvailability) => void;
 }
