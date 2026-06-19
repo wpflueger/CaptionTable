@@ -1,0 +1,16 @@
+{
+  "name": "Conversation Captioner",
+  "short_name": "Captioner",
+  "description": "A responsive caption display for in-person conversations.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#07111f",
+  "theme_color": "#102033",
+  "categories": ["accessibility", "productivity", "utilities"],
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "/icons/apple-touch-icon.svg", "sizes": "180x180", "type": "image/svg+xml" }
+  ]
+}
