@@ -72,6 +72,16 @@ Without the Deepgram key, the app falls back to Chrome Web Speech. Chrome Web Sp
 
 Do not ship long-lived provider API keys in a public browser app. The `VITE_DEEPGRAM_API_KEY` setup is intended for local development; production should use a short-lived token endpoint or backend proxy.
 
+### AMI diarization integration check
+
+Run an opt-in real Deepgram diarization check against the public AMI Meeting Corpus:
+
+```bash
+npm run test:deepgram:ami
+```
+
+The script downloads `ES2002a.Mix-Headset.wav`, creates a 90-second clip starting at 180 seconds in `.cache/test-audio/`, sends it to Deepgram Nova with `diarize=true`, and fails unless Deepgram returns a non-empty transcript with at least two detected speakers. Override with `AMI_CLIP_OFFSET_SECONDS=...` and `AMI_CLIP_SECONDS=...` for other segments.
+
 ## Onboarding and voice enrollment
 
 The onboarding flow is intentionally short and contains four steps: language selection, microphone permission, text-size selection, and optional voice setup. Voice setup can be skipped, repeated, or deleted later from settings UI actions wired to the voice helpers.
