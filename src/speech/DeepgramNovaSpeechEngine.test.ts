@@ -168,7 +168,7 @@ describe('DeepgramNovaSpeechEngine', () => {
     ]);
   });
 
-  it('uses a provided shared media stream instead of opening a second microphone stream', async () => {
+  it('uses a provided shared media stream without taking ownership by default', async () => {
     const stop = vi.fn();
     const stream = { getTracks: () => [{ stop }] } as unknown as MediaStream;
     const getUserMedia = vi.spyOn(navigator.mediaDevices, 'getUserMedia');
@@ -180,7 +180,48 @@ describe('DeepgramNovaSpeechEngine', () => {
 
     expect(getUserMedia).not.toHaveBeenCalled();
     engine.stop();
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it('stops provided streams only when ownership is explicit', async () => {
+    const stop = vi.fn();
+    const stream = { getTracks: () => [{ stop }] } as unknown as MediaStream;
+    const engine = new DeepgramNovaSpeechEngine({ apiKey: 'test-key' });
+    engine.setMediaStream(stream, { ownsStream: true });
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    FakeWebSocket.instances[0].onopen?.();
+
+    engine.stop();
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('throttles audio-send diagnostics while keeping internal counters accurate', async () => {
+    const audioStats: Array<{ chunks: number; bytes: number }> = [];
+    const engine = new DeepgramNovaSpeechEngine({ apiKey: 'test-key', audioStatsIntervalMs: 500 });
+    engine.setCallbacks({ onAudioSend: (stats) => audioStats.push(stats) });
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    FakeWebSocket.instances[0].onopen?.();
+    const processor = FakeScriptProcessorNode.instances[0];
+
+    processor.emitAudio(new Float32Array([0, 0.5]));
+    processor.emitAudio(new Float32Array([0, 0.5]));
+    processor.emitAudio(new Float32Array([0, 0.5]));
+    expect(audioStats).toEqual([{ chunks: 1, bytes: 4 }]);
+
+    vi.advanceTimersByTime(499);
+    processor.emitAudio(new Float32Array([0, 0.5]));
+    expect(audioStats).toEqual([{ chunks: 1, bytes: 4 }]);
+
+    vi.advanceTimersByTime(1);
+    processor.emitAudio(new Float32Array([0, 0.5]));
+    expect(audioStats).toEqual([
+      { chunks: 1, bytes: 4 },
+      { chunks: 5, bytes: 20 },
+    ]);
   });
 
   it('cleans up PCM nodes, socket, keepalive, and active state on stop', async () => {

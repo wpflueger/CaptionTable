@@ -19,10 +19,12 @@ export interface CaptionSessionState {
 }
 
 export type CaptionSessionListener = (state: CaptionSessionState) => void;
+export type CaptionSessionCaptionsListener = (captions: CaptionLine[]) => void;
 
 export class CaptionSession {
   private readonly engine: SpeechEngine;
   private readonly listeners = new Set<CaptionSessionListener>();
+  private readonly captionListeners = new Set<CaptionSessionCaptionsListener>();
   private finalizedCaptions: CaptionLine[] = [];
   private interimCaption: CaptionLine | null = null;
   private nextCaptionId = 1;
@@ -69,6 +71,7 @@ export class CaptionSession {
 
   start(): void {
     this.clearSessionState();
+    this.emitCaptions();
     this.engine.start();
     this.state = { ...this.state, active: this.engine.isActive(), error: this.engine.isActive() ? null : this.state.error };
     this.emit();
@@ -77,6 +80,7 @@ export class CaptionSession {
   stop(): void {
     this.engine.stop();
     this.clearSessionState();
+    this.emitCaptions();
     this.emit();
   }
 
@@ -90,11 +94,21 @@ export class CaptionSession {
     return () => this.listeners.delete(listener);
   }
 
+  subscribeCaptions(listener: CaptionSessionCaptionsListener): () => void {
+    this.captionListeners.add(listener);
+    listener(this.getCaptions());
+    return () => this.captionListeners.delete(listener);
+  }
+
   getState(): CaptionSessionState {
     return {
       ...this.state,
       captions: [...this.state.captions],
     };
+  }
+
+  getCaptions(): CaptionLine[] {
+    return [...this.state.captions];
   }
 
   private setInterimText(text: string, speakerLabel?: string): void {
@@ -131,6 +145,7 @@ export class CaptionSession {
         ? [...this.finalizedCaptions, this.interimCaption]
         : [...this.finalizedCaptions],
     };
+    this.emitCaptions();
     this.emit();
   }
 
@@ -152,5 +167,10 @@ export class CaptionSession {
   private emit(): void {
     const state = this.getState();
     this.listeners.forEach((listener) => listener(state));
+  }
+
+  private emitCaptions(): void {
+    const captions = this.getCaptions();
+    this.captionListeners.forEach((listener) => listener(captions));
   }
 }

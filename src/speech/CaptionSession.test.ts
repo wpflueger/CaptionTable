@@ -68,4 +68,25 @@ describe('CaptionSession', () => {
     session.stop();
     expect(session.getState()).toMatchObject({ active: false, captions: [], error: null });
   });
+
+  it('does not notify caption-only subscribers for diagnostics-only audio stats', () => {
+    const engine = new FakeSpeechEngine();
+    const session = new CaptionSession(engine);
+    const captionUpdates: Array<ReturnType<CaptionSession['getCaptions']>> = [];
+    const stateUpdates: Array<ReturnType<CaptionSession['getState']>> = [];
+
+    session.subscribeCaptions((captions) => captionUpdates.push(captions));
+    session.subscribe((state) => stateUpdates.push(state));
+    session.start();
+    engine.callbacks.onAudioSend?.({ chunks: 1, bytes: 1024 });
+    engine.callbacks.onAudioSend?.({ chunks: 2, bytes: 2048 });
+
+    expect(captionUpdates).toEqual([[], []]);
+    expect(stateUpdates.at(-1)).toMatchObject({ audioChunksSent: 2, audioBytesSent: 2048 });
+
+    engine.callbacks.onFinalText?.('caption text', 'Person 1');
+    expect(captionUpdates.at(-1)).toEqual([
+      { id: 1, text: 'caption text', finalized: true, speakerLabel: 'Person 1' },
+    ]);
+  });
 });

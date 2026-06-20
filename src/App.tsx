@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CaptionLine,
   CaptionSession,
@@ -28,9 +28,12 @@ const languageOptions = [
 const deepgramApiKey = import.meta.env.VITE_DEEPGRAM_API_KEY as string | undefined;
 const e2eAudioFixtureUrl = import.meta.env.DEV ? new URLSearchParams(window.location.search).get('e2eAudio') ?? undefined : undefined;
 const automaticSpeakerIdEnabled = Boolean(deepgramApiKey);
+const TRANSCRIPT_RENDER_WINDOW = 500;
+const VOLUME_METER_UPDATE_INTERVAL_MS = 100;
 
 export function App() {
   const [captionState, setCaptionState] = useState<CaptionSessionState>(initialCaptionState);
+  const [captions, setCaptions] = useState<CaptionLine[]>([]);
   const [sessionState, setSessionState] = useState<SessionState>('idle');
   const [guidance, setGuidance] = useState<SessionGuidance | null>(null);
   const [wakeLocked, setWakeLocked] = useState(false);
@@ -42,6 +45,7 @@ export function App() {
   const activeCaptionRef = useRef<HTMLElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const stopVolumeMeterRef = useRef<(() => void) | null>(null);
+  const lastVolumeMeterUpdateRef = useRef(0);
 
   const speechEngine = useMemo(
     () => new DeepgramNovaSpeechEngine({ apiKey: deepgramApiKey ?? '', language, model: 'nova-3', audioFixtureUrl: e2eAudioFixtureUrl }),
@@ -59,6 +63,7 @@ export function App() {
   );
 
   useEffect(() => captionSession.subscribe(setCaptionState), [captionSession]);
+  useEffect(() => captionSession.subscribeCaptions(setCaptions), [captionSession]);
 
   useEffect(() => {
     captionSession.setLanguage(language);
@@ -76,10 +81,10 @@ export function App() {
 
   useEffect(() => {
     scrollTranscriptToBottom(transcriptRef.current);
-  }, [captionState.captions]);
+  }, [captions]);
 
-  const latestCaption = captionState.captions.at(-1) ?? null;
-  const transcriptCaptions = captionState.captions;
+  const latestCaption = captions.at(-1) ?? null;
+  const transcriptCaptions = captions;
   const selectedLanguageLabel = languageOptions.find((option) => option.value === language)?.label ?? language;
 
   async function startCaptions() {
@@ -105,7 +110,7 @@ export function App() {
       return;
     }
 
-    speechEngine.setMediaStream(stream);
+    speechEngine.setMediaStream(stream, { ownsStream: false });
     captionSession.start();
   }
 
@@ -153,8 +158,12 @@ export function App() {
           total += centered * centered;
         });
         const rms = Math.sqrt(total / samples.length);
-        lifecycle.reportInputVolume(rms);
-        setVolumePercent(Math.min(100, Math.round(rms * 320)));
+        const now = Date.now();
+        if (now - lastVolumeMeterUpdateRef.current >= VOLUME_METER_UPDATE_INTERVAL_MS) {
+          lastVolumeMeterUpdateRef.current = now;
+          lifecycle.reportInputVolume(rms);
+          setVolumePercent(Math.min(100, Math.round(rms * 320)));
+        }
         animationFrame = requestAnimationFrame(tick);
       };
 
@@ -246,12 +255,12 @@ export function App() {
             {latestCaption && !latestCaption.finalized ? <span className="interim-badge">Interim</span> : null}
           </article>
 
-          <section className="deepgram-diagnostics" aria-live="polite" aria-atomic="true">
-            <strong>Deepgram status</strong>
-            <span>{captionState.statusMessage ?? 'Starting Deepgram…'}</span>
-            <span>Mic level: {volumePercent}%</span>
-            <span>Audio sent: {captionState.audioChunksSent} chunks / {Math.round(captionState.audioBytesSent / 1024)} KB</span>
-          </section>
+          <DeepgramDiagnostics
+            statusMessage={captionState.statusMessage}
+            volumePercent={volumePercent}
+            audioChunksSent={captionState.audioChunksSent}
+            audioBytesSent={captionState.audioBytesSent}
+          />
 
           <section className="caption-tools" aria-label="Caption controls">
             <label>
@@ -280,16 +289,7 @@ export function App() {
             {captionState.error ? <Notice tone="error">{captionState.error.message}</Notice> : null}
           </section>
 
-          <section className="turns-panel transcript-panel" aria-labelledby="transcript-heading">
-            <h2 id="transcript-heading">Full speaker transcript</h2>
-            <div className="turn-list transcript-list" ref={transcriptRef}>
-              {transcriptCaptions.length ? (
-                transcriptCaptions.map((caption) => <CaptionCard caption={caption} key={caption.id} />)
-              ) : (
-                <p className="empty-state">No captions yet. Start speaking and the transcript will appear here.</p>
-              )}
-            </div>
-          </section>
+          <TranscriptPanel captions={transcriptCaptions} transcriptRef={transcriptRef} />
         </section>
       )}
     </main>
@@ -342,7 +342,55 @@ function StatusCard({ label, value, tone }: { label: string; value: string; tone
   );
 }
 
-function CaptionCard({ caption }: { caption: CaptionLine }) {
+const DeepgramDiagnostics = memo(function DeepgramDiagnostics({
+  statusMessage,
+  volumePercent,
+  audioChunksSent,
+  audioBytesSent,
+}: {
+  statusMessage: string | null;
+  volumePercent: number;
+  audioChunksSent: number;
+  audioBytesSent: number;
+}) {
+  return (
+    <section className="deepgram-diagnostics" aria-live="polite" aria-atomic="true">
+      <strong>Deepgram status</strong>
+      <span>{statusMessage ?? 'Starting Deepgram…'}</span>
+      <span>Mic level: {volumePercent}%</span>
+      <span>Audio sent: {audioChunksSent} chunks / {Math.round(audioBytesSent / 1024)} KB</span>
+    </section>
+  );
+});
+
+const TranscriptPanel = memo(function TranscriptPanel({
+  captions,
+  transcriptRef,
+}: {
+  captions: CaptionLine[];
+  transcriptRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const hiddenCount = Math.max(0, captions.length - TRANSCRIPT_RENDER_WINDOW);
+  const renderedCaptions = hiddenCount ? captions.slice(-TRANSCRIPT_RENDER_WINDOW) : captions;
+
+  return (
+    <section className="turns-panel transcript-panel" aria-labelledby="transcript-heading">
+      <h2 id="transcript-heading">Full speaker transcript</h2>
+      {hiddenCount ? (
+        <p className="transcript-window-note">Showing latest {TRANSCRIPT_RENDER_WINDOW} of {captions.length} transcript turns.</p>
+      ) : null}
+      <div className="turn-list transcript-list" ref={transcriptRef}>
+        {renderedCaptions.length ? (
+          renderedCaptions.map((caption) => <CaptionCard caption={caption} key={caption.id} />)
+        ) : (
+          <p className="empty-state">No captions yet. Start speaking and the transcript will appear here.</p>
+        )}
+      </div>
+    </section>
+  );
+});
+
+const CaptionCard = memo(function CaptionCard({ caption }: { caption: CaptionLine }) {
   return (
     <article className="turn-card" data-finalized={caption.finalized}>
       <div>
@@ -352,7 +400,7 @@ function CaptionCard({ caption }: { caption: CaptionLine }) {
       <p>{caption.text}</p>
     </article>
   );
-}
+});
 
 function getSpeakerLabel(caption: CaptionLine | null): string {
   return caption?.speakerLabel || 'Identifying speaker';

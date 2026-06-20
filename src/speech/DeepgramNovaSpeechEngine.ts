@@ -10,7 +10,13 @@ export interface DeepgramNovaSpeechEngineOptions {
   language?: string;
   model?: 'nova-3' | 'nova-2' | string;
   mediaStream?: MediaStream;
+  ownsMediaStream?: boolean;
   audioFixtureUrl?: string;
+  audioStatsIntervalMs?: number;
+}
+
+export interface MediaStreamOptions {
+  ownsStream?: boolean;
 }
 
 type DeepgramWord = {
@@ -49,6 +55,7 @@ type WavFixture = {
 const DEFAULT_MODEL = 'nova-3';
 const KEEPALIVE_INTERVAL_MS = 8000;
 const PCM_BUFFER_SIZE = 4096;
+const DEFAULT_AUDIO_STATS_INTERVAL_MS = 500;
 
 export class DeepgramNovaSpeechEngine implements SpeechEngine {
   private callbacks: SpeechEngineCallbacks = {};
@@ -59,6 +66,8 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
   private manuallyStopped = false;
   private stream: MediaStream | null = null;
   private providedStream: MediaStream | null = null;
+  private providedStreamOwned = false;
+  private activeStreamOwned = false;
   private socket: WebSocket | null = null;
   private keepAliveTimer: number | null = null;
   private fixtureTimer: number | null = null;
@@ -67,16 +76,22 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
   private processorNode: ScriptProcessorNode | null = null;
   private silenceNode: GainNode | null = null;
   private readonly audioFixtureUrl?: string;
+  private readonly audioStatsIntervalMs: number;
   private sentFirstAudioChunk = false;
   private audioChunksSent = 0;
   private audioBytesSent = 0;
+  private lastAudioStatsEmitMs = Number.NEGATIVE_INFINITY;
+  private lastAudioStatsChunks = 0;
+  private lastAudioStatsBytes = 0;
 
   constructor(options: DeepgramNovaSpeechEngineOptions) {
     this.apiKey = options.apiKey;
     this.language = options.language ?? 'en-US';
     this.model = options.model ?? DEFAULT_MODEL;
     this.providedStream = options.mediaStream ?? null;
+    this.providedStreamOwned = options.ownsMediaStream ?? false;
     this.audioFixtureUrl = options.audioFixtureUrl;
+    this.audioStatsIntervalMs = options.audioStatsIntervalMs ?? DEFAULT_AUDIO_STATS_INTERVAL_MS;
   }
 
   start(): void {
@@ -99,6 +114,9 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     this.sentFirstAudioChunk = false;
     this.audioChunksSent = 0;
     this.audioBytesSent = 0;
+    this.lastAudioStatsEmitMs = Number.NEGATIVE_INFINITY;
+    this.lastAudioStatsChunks = 0;
+    this.lastAudioStatsBytes = 0;
     this.callbacks.onAvailabilityChange?.({ available: true });
     this.callbacks.onStatusChange?.('Connecting to Deepgram Nova…');
 
@@ -111,10 +129,14 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     this.callbacks.onActiveChange?.(false);
     this.clearKeepAlive();
     this.clearFixtureTimer();
+    this.flushAudioStats(true);
     this.stopPcmStreaming();
 
-    this.stream?.getTracks().forEach((track) => track.stop());
+    if (this.activeStreamOwned) {
+      this.stream?.getTracks().forEach((track) => track.stop());
+    }
     this.stream = null;
+    this.activeStreamOwned = false;
 
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify({ type: 'CloseStream' }));
@@ -123,8 +145,9 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     this.socket = null;
   }
 
-  setMediaStream(stream: MediaStream | null): void {
+  setMediaStream(stream: MediaStream | null, options: MediaStreamOptions = {}): void {
     this.providedStream = stream;
+    this.providedStreamOwned = options.ownsStream ?? false;
   }
 
   setLanguage(language: string): void {
@@ -144,7 +167,13 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     try {
       const fixture = this.audioFixtureUrl ? await loadWavFixture(this.audioFixtureUrl) : null;
       if (!fixture) {
-        this.stream = this.providedStream ?? await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (this.providedStream) {
+          this.stream = this.providedStream;
+          this.activeStreamOwned = this.providedStreamOwned;
+        } else {
+          this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          this.activeStreamOwned = true;
+        }
         this.audioContext = new AudioContextCtor();
         if (this.audioContext.state === 'suspended') {
           await this.audioContext.resume();
@@ -193,6 +222,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
         this.callbacks.onActiveChange?.(false);
         this.clearKeepAlive();
         this.clearFixtureTimer();
+        this.flushAudioStats(true);
         this.stopPcmStreaming();
         if (!this.manuallyStopped) {
           const reason = event.reason ? ` (${event.code}: ${event.reason})` : ` (${event.code})`;
@@ -225,9 +255,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
       const chunk = fixture.data.slice(offset, Math.min(offset + chunkBytes, fixture.data.byteLength));
       offset += chunk.byteLength;
       this.socket.send(chunk);
-      this.audioChunksSent += 1;
-      this.audioBytesSent += chunk.byteLength;
-      this.callbacks.onAudioSend?.({ chunks: this.audioChunksSent, bytes: this.audioBytesSent });
+      this.noteAudioSent(chunk.byteLength);
 
       if (!this.sentFirstAudioChunk) {
         this.sentFirstAudioChunk = true;
@@ -251,9 +279,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
       const samples = event.inputBuffer.getChannelData(0);
       const pcm = float32ToLinear16(samples);
       this.socket.send(pcm);
-      this.audioChunksSent += 1;
-      this.audioBytesSent += pcm.byteLength;
-      this.callbacks.onAudioSend?.({ chunks: this.audioChunksSent, bytes: this.audioBytesSent });
+      this.noteAudioSent(pcm.byteLength);
 
       if (!this.sentFirstAudioChunk) {
         this.sentFirstAudioChunk = true;
@@ -351,6 +377,27 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
         speakerLabel: typeof segment.speaker === 'number' ? `Person ${segment.speaker + 1}` : 'Uncertain speaker',
       }))
       .filter((segment) => segment.text.length > 0);
+  }
+
+  private noteAudioSent(byteLength: number): void {
+    this.audioChunksSent += 1;
+    this.audioBytesSent += byteLength;
+    this.flushAudioStats(false);
+  }
+
+  private flushAudioStats(force: boolean): void {
+    if (!this.audioChunksSent) return;
+    if (this.audioChunksSent === this.lastAudioStatsChunks && this.audioBytesSent === this.lastAudioStatsBytes) return;
+
+    const now = Date.now();
+    if (!force && now - this.lastAudioStatsEmitMs < this.audioStatsIntervalMs) {
+      return;
+    }
+
+    this.lastAudioStatsEmitMs = now;
+    this.lastAudioStatsChunks = this.audioChunksSent;
+    this.lastAudioStatsBytes = this.audioBytesSent;
+    this.callbacks.onAudioSend?.({ chunks: this.audioChunksSent, bytes: this.audioBytesSent });
   }
 
   private startKeepAlive(): void {
