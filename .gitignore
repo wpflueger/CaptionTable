@@ -1,5 +1,6 @@
 node_modules
 dist
 .cache
+public/__e2e-*.wav
 .DS_Store
 *.local

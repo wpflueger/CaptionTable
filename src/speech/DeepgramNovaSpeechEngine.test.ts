@@ -8,7 +8,7 @@ class FakeWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number; reason: string }) => void) | null = null;
   sent: unknown[] = [];
 
   constructor(public url: string, public protocols: string[]) {
@@ -20,7 +20,7 @@ class FakeWebSocket {
   }
 
   close(): void {
-    this.onclose?.();
+    this.onclose?.({ code: 1000, reason: '' });
   }
 
   emitMessage(payload: unknown): void {
@@ -28,47 +28,42 @@ class FakeWebSocket {
   }
 }
 
-class FakeMediaRecorder {
-  static instances: FakeMediaRecorder[] = [];
-  static isTypeSupported = vi.fn(() => true);
-  state = 'inactive';
-  mimeType: string;
-  ondataavailable: ((event: { data: Blob }) => void) | null = null;
-  onerror: ((event: Event) => void) | null = null;
-  onstart: (() => void) | null = null;
-  onstop: (() => void) | null = null;
+class FakeScriptProcessorNode {
+  static instances: FakeScriptProcessorNode[] = [];
+  onaudioprocess: ((event: { inputBuffer: { getChannelData: (channel: number) => Float32Array } }) => void) | null = null;
+  connect = vi.fn();
+  disconnect = vi.fn();
 
-  constructor(public stream: MediaStream, public options?: MediaRecorderOptions) {
-    this.mimeType = options?.mimeType ?? 'audio/webm;codecs=opus';
-    FakeMediaRecorder.instances.push(this);
+  constructor() {
+    FakeScriptProcessorNode.instances.push(this);
   }
 
-  start(): void {
-    this.state = 'recording';
-    this.onstart?.();
+  emitAudio(samples = new Float32Array([0, 0.25, -0.25, 1, -1])): void {
+    this.onaudioprocess?.({ inputBuffer: { getChannelData: () => samples } });
   }
+}
 
-  stop(): void {
-    this.state = 'inactive';
-    this.onstop?.();
-  }
-
-  emitData(size = 12): void {
-    this.ondataavailable?.({ data: new Blob([new Uint8Array(size)], { type: this.mimeType }) });
-  }
+class FakeAudioContext {
+  sampleRate = 16000;
+  state: AudioContextState = 'running';
+  destination = {} as AudioDestinationNode;
+  resume = vi.fn(async () => undefined);
+  close = vi.fn(async () => undefined);
+  createMediaStreamSource = vi.fn(() => ({ connect: vi.fn(), disconnect: vi.fn() }));
+  createScriptProcessor = vi.fn(() => new FakeScriptProcessorNode());
+  createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() }));
 }
 
 describe('DeepgramNovaSpeechEngine', () => {
   const originalWebSocket = globalThis.WebSocket;
-  const originalMediaRecorder = globalThis.MediaRecorder;
   const originalMediaDevices = navigator.mediaDevices;
 
   beforeEach(() => {
     FakeWebSocket.instances = [];
-    FakeMediaRecorder.instances = [];
+    FakeScriptProcessorNode.instances = [];
     vi.useFakeTimers();
     vi.stubGlobal('WebSocket', Object.assign(FakeWebSocket, { OPEN: FakeWebSocket.OPEN }));
-    vi.stubGlobal('MediaRecorder', FakeMediaRecorder);
+    vi.stubGlobal('AudioContext', FakeAudioContext);
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
       value: {
@@ -82,10 +77,9 @@ describe('DeepgramNovaSpeechEngine', () => {
     vi.unstubAllGlobals();
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: originalMediaDevices });
     globalThis.WebSocket = originalWebSocket;
-    globalThis.MediaRecorder = originalMediaRecorder;
   });
 
-  it('connects to Deepgram Nova with diarization enabled', async () => {
+  it('connects to Deepgram Nova with diarization and PCM streaming enabled', async () => {
     const engine = new DeepgramNovaSpeechEngine({ apiKey: 'test-key', language: 'en-US', model: 'nova-3' });
     engine.setCallbacks({});
 
@@ -96,7 +90,33 @@ describe('DeepgramNovaSpeechEngine', () => {
     expect(socket.url).toContain('model=nova-3');
     expect(socket.url).toContain('diarize=true');
     expect(socket.url).toContain('interim_results=true');
+    expect(socket.url).toContain('encoding=linear16');
+    expect(socket.url).toContain('sample_rate=16000');
     expect(socket.protocols).toEqual(['token', 'test-key']);
+  });
+
+  it('sends PCM audio from Web Audio to Deepgram and reports audio stats', async () => {
+    const audioStats: Array<{ chunks: number; bytes: number }> = [];
+    const statuses: string[] = [];
+    const engine = new DeepgramNovaSpeechEngine({ apiKey: 'test-key' });
+    engine.setCallbacks({
+      onAudioSend: (stats) => audioStats.push(stats),
+      onStatusChange: (message) => statuses.push(message),
+    });
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.onopen?.();
+
+    expect(FakeScriptProcessorNode.instances).toHaveLength(1);
+    FakeScriptProcessorNode.instances[0].emitAudio(new Float32Array([0, 0.5, -0.5]));
+
+    const binaryPayloads = socket.sent.filter((payload) => payload instanceof ArrayBuffer) as ArrayBuffer[];
+    expect(binaryPayloads).toHaveLength(1);
+    expect(binaryPayloads[0].byteLength).toBe(6);
+    expect(audioStats).toEqual([{ chunks: 1, bytes: 6 }]);
+    expect(statuses).toContain('Audio is streaming to Deepgram. Waiting for transcript…');
   });
 
   it('emits automatic speaker labels and splits multi-speaker results into separate transcript turns', async () => {
@@ -163,43 +183,7 @@ describe('DeepgramNovaSpeechEngine', () => {
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
-  it('recovers when the initial browser recorder produces zero audio chunks', async () => {
-    const initialStop = vi.fn();
-    const fallbackStop = vi.fn();
-    const initialStream = { getTracks: () => [{ stop: initialStop }] } as unknown as MediaStream;
-    const fallbackStream = { getTracks: () => [{ stop: fallbackStop }] } as unknown as MediaStream;
-    const getUserMedia = vi.spyOn(navigator.mediaDevices, 'getUserMedia').mockResolvedValue(fallbackStream);
-    const statuses: string[] = [];
-    const audioStats: Array<{ chunks: number; bytes: number }> = [];
-    const engine = new DeepgramNovaSpeechEngine({ apiKey: 'test-key', mediaStream: initialStream });
-    engine.setCallbacks({
-      onStatusChange: (message) => statuses.push(message),
-      onAudioSend: (stats) => audioStats.push(stats),
-    });
-
-    engine.start();
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
-    const socket = FakeWebSocket.instances[0];
-    socket.onopen?.();
-
-    expect(FakeMediaRecorder.instances).toHaveLength(1);
-    expect(getUserMedia).not.toHaveBeenCalled();
-    expect(audioStats).toEqual([]);
-
-    await vi.advanceTimersByTimeAsync(3000);
-    await vi.waitFor(() => expect(FakeMediaRecorder.instances).toHaveLength(2));
-
-    expect(statuses).toContain('No audio chunks from browser recorder yet. Restarting recorder with a fresh microphone stream…');
-    expect(getUserMedia).toHaveBeenCalledTimes(1);
-
-    FakeMediaRecorder.instances[1].emitData(256);
-
-    expect(socket.sent.some((payload) => payload instanceof Blob)).toBe(true);
-    expect(audioStats.at(-1)).toEqual({ chunks: 1, bytes: 256 });
-    expect(statuses).toContain('Audio is streaming to Deepgram. Waiting for transcript…');
-  });
-
-  it('cleans up recorder, socket, keepalive, and active state on stop', async () => {
+  it('cleans up PCM nodes, socket, keepalive, and active state on stop', async () => {
     const activeStates: boolean[] = [];
     const engine = new DeepgramNovaSpeechEngine({ apiKey: 'test-key' });
     engine.setCallbacks({ onActiveChange: (active) => activeStates.push(active) });
@@ -215,5 +199,6 @@ describe('DeepgramNovaSpeechEngine', () => {
     engine.stop();
     expect(activeStates).toContain(false);
     expect(socket.sent.some((payload) => typeof payload === 'string' && payload.includes('CloseStream'))).toBe(true);
+    expect(FakeScriptProcessorNode.instances[0].disconnect).toHaveBeenCalled();
   });
 });

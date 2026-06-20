@@ -26,6 +26,7 @@ const languageOptions = [
 ];
 
 const deepgramApiKey = import.meta.env.VITE_DEEPGRAM_API_KEY as string | undefined;
+const e2eAudioFixtureUrl = import.meta.env.DEV ? new URLSearchParams(window.location.search).get('e2eAudio') ?? undefined : undefined;
 const automaticSpeakerIdEnabled = Boolean(deepgramApiKey);
 
 export function App() {
@@ -43,7 +44,7 @@ export function App() {
   const stopVolumeMeterRef = useRef<(() => void) | null>(null);
 
   const speechEngine = useMemo(
-    () => new DeepgramNovaSpeechEngine({ apiKey: deepgramApiKey ?? '', language, model: 'nova-3' }),
+    () => new DeepgramNovaSpeechEngine({ apiKey: deepgramApiKey ?? '', language, model: 'nova-3', audioFixtureUrl: e2eAudioFixtureUrl }),
     [],
   );
   const captionSession = useMemo(() => new CaptionSession(speechEngine), [speechEngine]);
@@ -89,10 +90,18 @@ export function App() {
 
     setGuidance(null);
     setMicrophoneStatus('Requesting microphone access…');
-    await lifecycle.start();
+    void lifecycle.start();
+
+    if (e2eAudioFixtureUrl) {
+      setMicrophoneStatus('Using E2E audio fixture');
+      speechEngine.setMediaStream(null);
+      captionSession.start();
+      return;
+    }
+
     const stream = await startVolumeMeter();
     if (!stream) {
-      await lifecycle.stop();
+      void lifecycle.stop();
       return;
     }
 

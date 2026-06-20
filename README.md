@@ -46,7 +46,17 @@ The script downloads `ES2002a.Mix-Headset.wav`, creates a 90-second clip startin
 
 ## Tests
 
+Fast unit/build checks:
+
 ```bash
 npm test
 npm run build
 ```
+
+Real Deepgram UI E2E proof:
+
+```bash
+npm run test:e2e:deepgram-ui
+```
+
+That script launches Chrome, loads the actual app UI, streams a public AMI meeting WAV fixture through the app's Deepgram Nova WebSocket path, and fails unless the UI renders a full transcript with at least two automatic speaker labels.

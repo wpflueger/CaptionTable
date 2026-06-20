@@ -10,6 +10,7 @@ export interface DeepgramNovaSpeechEngineOptions {
   language?: string;
   model?: 'nova-3' | 'nova-2' | string;
   mediaStream?: MediaStream;
+  audioFixtureUrl?: string;
 }
 
 type DeepgramWord = {
@@ -33,9 +34,21 @@ type DeepgramMessage = {
   };
 };
 
+type BrowserAudioWindow = Window & {
+  webkitAudioContext?: typeof AudioContext;
+};
+
+type WavFixture = {
+  sampleRate: number;
+  channels: number;
+  byteRate: number;
+  blockAlign: number;
+  data: ArrayBuffer;
+};
+
 const DEFAULT_MODEL = 'nova-3';
-const DEFAULT_TIMESLICE_MS = 250;
 const KEEPALIVE_INTERVAL_MS = 8000;
+const PCM_BUFFER_SIZE = 4096;
 
 export class DeepgramNovaSpeechEngine implements SpeechEngine {
   private callbacks: SpeechEngineCallbacks = {};
@@ -46,33 +59,39 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
   private manuallyStopped = false;
   private stream: MediaStream | null = null;
   private providedStream: MediaStream | null = null;
-  private recorder: MediaRecorder | null = null;
   private socket: WebSocket | null = null;
   private keepAliveTimer: number | null = null;
-  private recorderWatchdogTimer: number | null = null;
+  private fixtureTimer: number | null = null;
+  private audioContext: AudioContext | null = null;
+  private sourceNode: MediaStreamAudioSourceNode | null = null;
+  private processorNode: ScriptProcessorNode | null = null;
+  private silenceNode: GainNode | null = null;
+  private readonly audioFixtureUrl?: string;
   private sentFirstAudioChunk = false;
   private audioChunksSent = 0;
   private audioBytesSent = 0;
-  private usingFallbackRecorderStream = false;
 
   constructor(options: DeepgramNovaSpeechEngineOptions) {
     this.apiKey = options.apiKey;
     this.language = options.language ?? 'en-US';
     this.model = options.model ?? DEFAULT_MODEL;
     this.providedStream = options.mediaStream ?? null;
+    this.audioFixtureUrl = options.audioFixtureUrl;
   }
 
   start(): void {
-    if (this.active) {
+    if (this.active) return;
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      this.emitError({ code: 'transcription-unavailable', message: SPEECH_ERROR_MESSAGES['transcription-unavailable'] });
+      this.callbacks.onAvailabilityChange?.({ available: false, message: SPEECH_ERROR_MESSAGES['transcription-unavailable'] });
       return;
     }
 
-    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-      this.emitError({ code: 'transcription-unavailable', message: SPEECH_ERROR_MESSAGES['transcription-unavailable'] });
-      this.callbacks.onAvailabilityChange?.({
-        available: false,
-        message: SPEECH_ERROR_MESSAGES['transcription-unavailable'],
-      });
+    const AudioContextCtor = window.AudioContext || (window as BrowserAudioWindow).webkitAudioContext;
+    if (!AudioContextCtor) {
+      this.emitError({ code: 'transcription-unavailable', message: 'Web Audio is not available in this browser.' });
+      this.callbacks.onAvailabilityChange?.({ available: false, message: 'Web Audio is not available in this browser.' });
       return;
     }
 
@@ -83,7 +102,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     this.callbacks.onAvailabilityChange?.({ available: true });
     this.callbacks.onStatusChange?.('Connecting to Deepgram Nova…');
 
-    void this.open();
+    void this.open(AudioContextCtor);
   }
 
   stop(): void {
@@ -91,12 +110,8 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     this.active = false;
     this.callbacks.onActiveChange?.(false);
     this.clearKeepAlive();
-    this.clearRecorderWatchdog();
-
-    if (this.recorder && this.recorder.state !== 'inactive') {
-      this.recorder.stop();
-    }
-    this.recorder = null;
+    this.clearFixtureTimer();
+    this.stopPcmStreaming();
 
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;
@@ -108,12 +123,12 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     this.socket = null;
   }
 
-  setLanguage(language: string): void {
-    this.language = language;
-  }
-
   setMediaStream(stream: MediaStream | null): void {
     this.providedStream = stream;
+  }
+
+  setLanguage(language: string): void {
+    this.language = language;
   }
 
   setCallbacks(callbacks: SpeechEngineCallbacks): void {
@@ -125,11 +140,19 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     return this.active;
   }
 
-  private async open(): Promise<void> {
+  private async open(AudioContextCtor: typeof AudioContext): Promise<void> {
     try {
-      this.usingFallbackRecorderStream = false;
-      this.stream = this.providedStream ?? await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = this.pickMimeType();
+      const fixture = this.audioFixtureUrl ? await loadWavFixture(this.audioFixtureUrl) : null;
+      if (!fixture) {
+        this.stream = this.providedStream ?? await navigator.mediaDevices.getUserMedia({ audio: true });
+        this.audioContext = new AudioContextCtor();
+        if (this.audioContext.state === 'suspended') {
+          await this.audioContext.resume();
+        }
+      }
+
+      const sampleRate = fixture?.sampleRate ?? Math.round(this.audioContext?.sampleRate ?? 48000);
+      const channels = fixture?.channels ?? 1;
       const params = new URLSearchParams({
         model: this.model,
         language: this.language,
@@ -139,18 +162,23 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
         punctuate: 'true',
         endpointing: '300',
         vad_events: 'true',
+        encoding: 'linear16',
+        sample_rate: String(sampleRate),
+        channels: String(channels),
       });
 
       this.socket = new WebSocket(`wss://api.deepgram.com/v1/listen?${params.toString()}`, ['token', this.apiKey]);
       this.socket.onopen = () => {
-        if (!this.stream || !this.socket) {
-          return;
-        }
-
+        if (!this.socket) return;
         this.active = true;
         this.callbacks.onActiveChange?.(true);
-        this.callbacks.onStatusChange?.('Connected to Deepgram. Starting browser audio recorder…');
-        this.startRecorder(this.stream, mimeType);
+        if (fixture) {
+          this.callbacks.onStatusChange?.(`Connected to Deepgram. Streaming E2E audio fixture at ${fixture.sampleRate}Hz…`);
+          this.startFixtureStreaming(fixture);
+        } else if (this.stream && this.audioContext) {
+          this.callbacks.onStatusChange?.(`Connected to Deepgram. Streaming ${Math.round(this.audioContext.sampleRate)}Hz PCM audio…`);
+          this.startPcmStreaming(this.stream, this.audioContext);
+        }
         this.startKeepAlive();
       };
       this.socket.onmessage = (event) => this.handleMessage(event.data);
@@ -160,106 +188,102 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
         this.callbacks.onStatusChange?.('Deepgram connection error.');
         this.emitError({ code: 'connectivity-loss', message: SPEECH_ERROR_MESSAGES['connectivity-loss'], cause: event });
       };
-      this.socket.onclose = () => {
+      this.socket.onclose = (event) => {
         this.active = false;
         this.callbacks.onActiveChange?.(false);
         this.clearKeepAlive();
-        this.clearRecorderWatchdog();
+        this.clearFixtureTimer();
+        this.stopPcmStreaming();
         if (!this.manuallyStopped) {
-          this.callbacks.onStatusChange?.('Deepgram connection closed unexpectedly.');
-          this.emitError({ code: 'connectivity-loss', message: SPEECH_ERROR_MESSAGES['connectivity-loss'] });
+          const reason = event.reason ? ` (${event.code}: ${event.reason})` : ` (${event.code})`;
+          this.callbacks.onStatusChange?.(`Deepgram connection closed unexpectedly${reason}.`);
+          this.emitError({ code: 'connectivity-loss', message: `${SPEECH_ERROR_MESSAGES['connectivity-loss']} Deepgram close code: ${event.code}.`, cause: event });
         }
       };
     } catch (error) {
       this.active = false;
       this.callbacks.onActiveChange?.(false);
-      this.callbacks.onStatusChange?.('Could not start microphone capture.');
+      this.callbacks.onStatusChange?.('Could not start microphone capture or Web Audio.');
       this.emitError({ code: 'microphone-permission', message: SPEECH_ERROR_MESSAGES['microphone-permission'], cause: error });
     }
   }
 
-  private startRecorder(stream: MediaStream, mimeType: string | undefined): void {
-    this.clearRecorderWatchdog();
+  private startFixtureStreaming(fixture: WavFixture): void {
+    this.clearFixtureTimer();
+    const chunkBytes = Math.max(fixture.blockAlign, Math.floor(fixture.byteRate / 10 / fixture.blockAlign) * fixture.blockAlign);
+    let offset = 0;
 
-    try {
-      this.recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-    } catch (error) {
-      this.callbacks.onStatusChange?.('Browser MediaRecorder failed to start for the microphone stream.');
-      this.emitError({ code: 'processing-failure', message: 'Browser MediaRecorder failed to start for the microphone stream.', cause: error });
-      return;
-    }
-
-    this.recorder.ondataavailable = (event) => {
-      if (event.data.size > 0 && this.socket?.readyState === WebSocket.OPEN) {
-        this.socket.send(event.data);
-        this.audioChunksSent += 1;
-        this.audioBytesSent += event.data.size;
-        this.callbacks.onAudioSend?.({ chunks: this.audioChunksSent, bytes: this.audioBytesSent });
-        if (!this.sentFirstAudioChunk) {
-          this.sentFirstAudioChunk = true;
-          this.clearRecorderWatchdog();
-          this.callbacks.onStatusChange?.('Audio is streaming to Deepgram. Waiting for transcript…');
-        } else if (this.audioChunksSent % 20 === 0) {
-          this.callbacks.onStatusChange?.(`Audio is streaming to Deepgram (${this.audioChunksSent} chunks, ${Math.round(this.audioBytesSent / 1024)} KB). Waiting for transcript…`);
+    const sendNextChunk = () => {
+      if (this.socket?.readyState !== WebSocket.OPEN || offset >= fixture.data.byteLength) {
+        this.clearFixtureTimer();
+        if (this.socket?.readyState === WebSocket.OPEN) {
+          this.socket.send(JSON.stringify({ type: 'CloseStream' }));
         }
-      }
-    };
-    this.recorder.onerror = (event) => {
-      this.callbacks.onStatusChange?.('Browser MediaRecorder reported an error.');
-      this.emitError({ code: 'processing-failure', message: SPEECH_ERROR_MESSAGES['processing-failure'], cause: event });
-    };
-    this.recorder.onstart = () => {
-      this.callbacks.onStatusChange?.(`Browser audio recorder started (${this.recorder?.mimeType || mimeType || 'default audio format'}). Waiting for audio chunks…`);
-    };
-    this.recorder.onstop = () => {
-      if (!this.manuallyStopped && this.active) {
-        this.callbacks.onStatusChange?.('Browser audio recorder stopped unexpectedly.');
-      }
-    };
-
-    this.recorder.start(DEFAULT_TIMESLICE_MS);
-    this.startRecorderWatchdog(mimeType);
-  }
-
-  private startRecorderWatchdog(mimeType: string | undefined): void {
-    this.clearRecorderWatchdog();
-    this.recorderWatchdogTimer = window.setTimeout(() => {
-      this.recorderWatchdogTimer = null;
-      if (this.audioChunksSent > 0 || this.manuallyStopped || !this.active) {
         return;
       }
 
-      this.callbacks.onStatusChange?.('No audio chunks from browser recorder yet. Restarting recorder with a fresh microphone stream…');
-      void this.restartRecorderWithFreshStream(mimeType);
-    }, 3000);
+      const chunk = fixture.data.slice(offset, Math.min(offset + chunkBytes, fixture.data.byteLength));
+      offset += chunk.byteLength;
+      this.socket.send(chunk);
+      this.audioChunksSent += 1;
+      this.audioBytesSent += chunk.byteLength;
+      this.callbacks.onAudioSend?.({ chunks: this.audioChunksSent, bytes: this.audioBytesSent });
+
+      if (!this.sentFirstAudioChunk) {
+        this.sentFirstAudioChunk = true;
+        this.callbacks.onStatusChange?.('Audio fixture is streaming to Deepgram. Waiting for transcript…');
+      }
+    };
+
+    sendNextChunk();
+    this.fixtureTimer = window.setInterval(sendNextChunk, 100);
   }
 
-  private async restartRecorderWithFreshStream(mimeType: string | undefined): Promise<void> {
-    if (this.usingFallbackRecorderStream || !navigator.mediaDevices?.getUserMedia) {
-      this.callbacks.onStatusChange?.('Browser recorder still has not produced audio chunks. Check Chrome microphone input and reload.');
-      return;
-    }
+  private startPcmStreaming(stream: MediaStream, audioContext: AudioContext): void {
+    this.stopPcmStreaming(false);
+    this.sourceNode = audioContext.createMediaStreamSource(stream);
+    this.processorNode = audioContext.createScriptProcessor(PCM_BUFFER_SIZE, 1, 1);
+    this.silenceNode = audioContext.createGain();
+    this.silenceNode.gain.value = 0;
 
-    this.usingFallbackRecorderStream = true;
-    if (this.recorder && this.recorder.state !== 'inactive') {
-      this.recorder.stop();
-    }
+    this.processorNode.onaudioprocess = (event) => {
+      if (this.socket?.readyState !== WebSocket.OPEN) return;
+      const samples = event.inputBuffer.getChannelData(0);
+      const pcm = float32ToLinear16(samples);
+      this.socket.send(pcm);
+      this.audioChunksSent += 1;
+      this.audioBytesSent += pcm.byteLength;
+      this.callbacks.onAudioSend?.({ chunks: this.audioChunksSent, bytes: this.audioBytesSent });
 
-    try {
-      const fallbackStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this.stream = fallbackStream;
-      this.callbacks.onStatusChange?.('Restarted browser recorder with a fresh microphone stream. Waiting for audio chunks…');
-      this.startRecorder(fallbackStream, mimeType);
-    } catch (error) {
-      this.callbacks.onStatusChange?.('Could not restart microphone recorder.');
-      this.emitError({ code: 'microphone-permission', message: SPEECH_ERROR_MESSAGES['microphone-permission'], cause: error });
+      if (!this.sentFirstAudioChunk) {
+        this.sentFirstAudioChunk = true;
+        this.callbacks.onStatusChange?.('Audio is streaming to Deepgram. Waiting for transcript…');
+      } else if (this.audioChunksSent % 50 === 0) {
+        this.callbacks.onStatusChange?.(`Audio is streaming to Deepgram (${this.audioChunksSent} chunks, ${Math.round(this.audioBytesSent / 1024)} KB). Waiting for transcript…`);
+      }
+    };
+
+    this.sourceNode.connect(this.processorNode);
+    this.processorNode.connect(this.silenceNode);
+    this.silenceNode.connect(audioContext.destination);
+  }
+
+  private stopPcmStreaming(closeContext = true): void {
+    this.processorNode?.disconnect();
+    this.sourceNode?.disconnect();
+    this.silenceNode?.disconnect();
+    this.processorNode = null;
+    this.sourceNode = null;
+    this.silenceNode = null;
+
+    if (closeContext && this.audioContext) {
+      void this.audioContext.close();
+      this.audioContext = null;
     }
   }
 
   private handleMessage(data: unknown): void {
-    if (typeof data !== 'string') {
-      return;
-    }
+    if (typeof data !== 'string') return;
 
     let message: DeepgramMessage;
     try {
@@ -267,6 +291,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     } catch {
       return;
     }
+
     if (message.type === 'Metadata') {
       this.callbacks.onStatusChange?.('Deepgram stream is ready. Speak clearly near the microphone.');
       return;
@@ -287,15 +312,11 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
       return;
     }
 
-    if (message.type && message.type !== 'Results') {
-      return;
-    }
+    if (message.type && message.type !== 'Results') return;
 
     const alternative = message.channel?.alternatives?.[0];
     const text = alternative?.transcript?.trim();
-    if (!text) {
-      return;
-    }
+    if (!text) return;
 
     this.callbacks.onStatusChange?.(message.is_final || message.speech_final ? 'Final transcript received.' : 'Live transcript received.');
     const speakerSegments = this.getSpeakerSegments(alternative?.words ?? [], text);
@@ -309,9 +330,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
   }
 
   private getSpeakerSegments(words: DeepgramWord[], fallbackText: string): Array<{ text: string; speakerLabel: string }> {
-    if (!words.length) {
-      return [{ text: fallbackText, speakerLabel: 'Uncertain speaker' }];
-    }
+    if (!words.length) return [{ text: fallbackText, speakerLabel: 'Uncertain speaker' }];
 
     const segments: Array<{ speaker?: number; words: string[] }> = [];
     words.forEach((word) => {
@@ -323,39 +342,15 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
         segments.push({ speaker: word.speaker, words: [text] });
         return;
       }
-
       current.words.push(text);
     });
 
-    return segments.map((segment) => ({
-      text: segment.words.join(' ').trim(),
-      speakerLabel: typeof segment.speaker === 'number' ? `Person ${segment.speaker + 1}` : 'Uncertain speaker',
-    })).filter((segment) => segment.text.length > 0);
-  }
-
-  private getSpeakerLabel(words: DeepgramWord[]): string {
-    const speakerCounts = new Map<number, number>();
-    words.forEach((word) => {
-      if (typeof word.speaker === 'number') {
-        speakerCounts.set(word.speaker, (speakerCounts.get(word.speaker) ?? 0) + 1);
-      }
-    });
-
-    let bestSpeaker: number | null = null;
-    let bestCount = 0;
-    speakerCounts.forEach((count, speaker) => {
-      if (count > bestCount) {
-        bestSpeaker = speaker;
-        bestCount = count;
-      }
-    });
-
-    return bestSpeaker === null ? 'Uncertain speaker' : `Person ${bestSpeaker + 1}`;
-  }
-
-  private pickMimeType(): string | undefined {
-    const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
-    return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate));
+    return segments
+      .map((segment) => ({
+        text: segment.words.join(' ').trim(),
+        speakerLabel: typeof segment.speaker === 'number' ? `Person ${segment.speaker + 1}` : 'Uncertain speaker',
+      }))
+      .filter((segment) => segment.text.length > 0);
   }
 
   private startKeepAlive(): void {
@@ -374,14 +369,82 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     }
   }
 
-  private clearRecorderWatchdog(): void {
-    if (this.recorderWatchdogTimer !== null) {
-      window.clearTimeout(this.recorderWatchdogTimer);
-      this.recorderWatchdogTimer = null;
+  private clearFixtureTimer(): void {
+    if (this.fixtureTimer !== null) {
+      window.clearInterval(this.fixtureTimer);
+      this.fixtureTimer = null;
     }
   }
 
   private emitError(error: SpeechErrorState): void {
     this.callbacks.onError?.(error);
   }
+}
+
+async function loadWavFixture(url: string): Promise<WavFixture> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Could not load E2E audio fixture: ${response.status}`);
+  }
+
+  const buffer = await response.arrayBuffer();
+  const view = new DataView(buffer);
+  if (ascii(buffer, 0, 4) !== 'RIFF' || ascii(buffer, 8, 12) !== 'WAVE') {
+    throw new Error('E2E audio fixture must be a RIFF/WAVE file.');
+  }
+
+  let offset = 12;
+  let sampleRate = 0;
+  let channels = 0;
+  let byteRate = 0;
+  let blockAlign = 0;
+  let bitsPerSample = 0;
+  let data: ArrayBuffer | null = null;
+
+  while (offset + 8 <= buffer.byteLength) {
+    const id = ascii(buffer, offset, offset + 4);
+    const size = view.getUint32(offset + 4, true);
+    const chunkStart = offset + 8;
+    const chunkEnd = chunkStart + size;
+
+    if (id === 'fmt ') {
+      const audioFormat = view.getUint16(chunkStart, true);
+      channels = view.getUint16(chunkStart + 2, true);
+      sampleRate = view.getUint32(chunkStart + 4, true);
+      byteRate = view.getUint32(chunkStart + 8, true);
+      blockAlign = view.getUint16(chunkStart + 12, true);
+      bitsPerSample = view.getUint16(chunkStart + 14, true);
+      if (audioFormat !== 1 || bitsPerSample !== 16) {
+        throw new Error('E2E audio fixture must be 16-bit PCM WAV.');
+      }
+    }
+
+    if (id === 'data') {
+      data = buffer.slice(chunkStart, chunkEnd);
+      break;
+    }
+
+    offset = chunkEnd + (size % 2);
+  }
+
+  if (!data || !sampleRate || !channels || !byteRate || !blockAlign) {
+    throw new Error('Could not parse E2E WAV fixture.');
+  }
+
+  return { sampleRate, channels, byteRate, blockAlign, data };
+}
+
+function ascii(buffer: ArrayBuffer, start: number, end: number): string {
+  return String.fromCharCode(...new Uint8Array(buffer.slice(start, end)));
+}
+
+function float32ToLinear16(samples: Float32Array): ArrayBuffer {
+  const output = new ArrayBuffer(samples.length * 2);
+  const view = new DataView(output);
+  samples.forEach((sample, index) => {
+    const clamped = Math.max(-1, Math.min(1, sample));
+    const value = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+    view.setInt16(index * 2, value, true);
+  });
+  return output;
 }
