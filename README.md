@@ -1,62 +1,229 @@
 # CaptionTable
 
-CaptionTable is an installable responsive web application for a **Conversation Captioner** experience. It uses **Deepgram Nova** for live transcription and automatic speaker diarization, then displays a full scrollable transcript of who said what.
+CaptionTable is a responsive web app for a **set-and-forget Conversation Captioner** experience.
 
-## Development
+The current app is **Deepgram Nova only** for transcription and automatic speaker diarization. It does not include a manual speaker picker and does not include a browser Web Speech fallback in the main app.
+
+## Current behavior
+
+- Captures microphone audio in the browser.
+- Streams audio to Deepgram Nova over WebSocket.
+- Requests automatic speaker diarization with `diarize=true`.
+- Displays the current live caption in a large high-visibility panel.
+- Displays a full scrollable transcript of speaker-labeled turns.
+- Labels speakers as Deepgram returns them, e.g. `Person 1`, `Person 2`.
+- Disables Start if `VITE_DEEPGRAM_API_KEY` is missing.
+
+## Requirements
+
+- Node/npm
+- Chrome recommended for local development
+- Deepgram API key
+- Internet access to Deepgram WebSocket/API endpoints
+
+## Local development
 
 ```bash
 npm install
 cp .env.example .env.local
-# Fill in VITE_DEEPGRAM_API_KEY
+```
+
+Edit `.env.local`:
+
+```bash
+VITE_DEEPGRAM_API_KEY=your_deepgram_key_here
+```
+
+Start the dev server:
+
+```bash
 npm run dev
 ```
 
-Open the local Vite URL, usually `http://localhost:5173`.
+Open the Vite URL, usually:
 
-## Production build
+```text
+http://localhost:5173
+```
+
+If you change `.env.local`, restart `npm run dev`. Vite reads env variables at startup.
+
+## Production-style local build
 
 ```bash
 npm run build
 npm run preview
 ```
 
-## Automatic speaker identification
+## App architecture
 
-Automatic speaker identification is Deepgram-only in the main app:
+### Main UI
 
-```bash
-VITE_DEEPGRAM_API_KEY=...
+- `src/App.tsx`
+  - Start screen
+  - Deepgram readiness state
+  - active caption screen
+  - full speaker transcript panel
+  - microphone status and Deepgram diagnostics
+
+### Speech/session layer
+
+- `src/speech/DeepgramNovaSpeechEngine.ts`
+  - Deepgram Nova WebSocket connection
+  - `diarize=true`
+  - Web Audio PCM streaming path
+  - dev-only E2E WAV fixture streaming path
+  - Deepgram result parsing
+  - speaker turn splitting by consecutive Deepgram `word.speaker` values
+- `src/speech/CaptionSession.ts`
+  - active/inactive state
+  - interim/final caption state
+  - transcript state
+  - status and audio send stats
+- `src/speech/SpeechEngine.ts`
+  - engine interface and callback contract
+- `src/session/sessionLifecycle.ts`
+  - wake lock
+  - visibility/online/offline lifecycle guidance
+  - low-volume/silence guidance
+
+## Deepgram diarization behavior
+
+Deepgram returns speaker numbers per word. The app converts those to labels:
+
+```text
+speaker: 0 -> Person 1
+speaker: 1 -> Person 2
+speaker: 2 -> Person 3
 ```
 
-When `VITE_DEEPGRAM_API_KEY` is present, the app uses Deepgram Nova live transcription with `diarize=true`. Caption cards and the full transcript show automatic speaker labels such as `Person 1`, `Person 2`, etc.
+If a single Deepgram result contains multiple consecutive speaker segments, the app splits it into separate transcript turns. Example:
 
-If the key is missing, Start is disabled. There is no manual speaker picker and no browser speech fallback path in the main app.
+```text
+speaker 0: "hello there"
+speaker 1: "yes exactly"
+```
 
-Do not ship long-lived provider API keys in a public browser app. The `VITE_DEEPGRAM_API_KEY` setup is intended for local development; production should use a short-lived token endpoint or backend proxy.
+becomes two transcript cards:
 
-## AMI diarization integration check
+```text
+Person 1: hello there
+Person 2: yes exactly
+```
 
-Run an opt-in real Deepgram diarization check against the public AMI Meeting Corpus:
+This is diarization, not identity recognition. The app can distinguish speakers as `Person N`, but it does not know real names like “Alice” or “William”.
+
+## Diagnostics in the UI
+
+During an active session, the app shows:
+
+- Deepgram status
+- mic level percentage
+- audio chunks sent
+- audio KB sent
+
+Useful states:
+
+| UI status | Meaning |
+|---|---|
+| `Connected to Deepgram...` | WebSocket opened successfully |
+| `Audio is streaming to Deepgram...` | Audio bytes are being sent |
+| `Live transcript received.` | Deepgram sent interim transcript text |
+| `Final transcript received.` | Deepgram sent finalized transcript text |
+| `Audio sent: 0 chunks / 0 KB` | browser audio path has not sent audio yet |
+
+## Troubleshooting
+
+### Start button is disabled
+
+`VITE_DEEPGRAM_API_KEY` is missing or Vite was started before `.env.local` was updated.
+
+Fix:
+
+```bash
+# ensure .env.local contains the key
+npm run dev
+```
+
+Restart the dev server after editing `.env.local`.
+
+### You see stale UI or old picker controls
+
+The old static demo and browser fallback have been removed from the repo. If you still see a picker, Chrome is serving cached code.
+
+Run this in the browser console on `localhost`:
+
+```js
+navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister()));
+caches.keys().then(keys => keys.forEach(key => caches.delete(key)));
+localStorage.clear();
+sessionStorage.clear();
+location.reload();
+```
+
+Then hard refresh.
+
+### Mic permission is granted but no captions appear
+
+Check the diagnostics:
+
+- If `Audio sent` is increasing, the browser is sending audio to Deepgram.
+- If `Audio sent` remains `0`, the browser is not producing audio for the app.
+- If `Audio sent` increases but no transcript appears, Deepgram may not be detecting speech or may be returning an error.
+
+Also check:
+
+- Chrome microphone selected in browser settings
+- macOS privacy permission for Chrome microphone
+- input volume
+- correct physical microphone
+- VPN/proxy/firewall blocking Deepgram WebSocket traffic
+
+## Testing
+
+Fast tests:
+
+```bash
+npm test
+```
+
+Production build check:
+
+```bash
+npm run build
+```
+
+Real Deepgram prerecorded AMI diarization check:
 
 ```bash
 npm run test:deepgram:ami
 ```
 
-The script downloads `ES2002a.Mix-Headset.wav`, creates a 90-second clip starting at 180 seconds in `.cache/test-audio/`, sends it to Deepgram Nova with `diarize=true`, and fails unless Deepgram returns a non-empty transcript with at least two detected speakers. Override with `AMI_CLIP_OFFSET_SECONDS=...` and `AMI_CLIP_SECONDS=...` for other segments.
-
-## Tests
-
-Fast unit/build checks:
-
-```bash
-npm test
-npm run build
-```
-
-Real Deepgram UI E2E proof:
+Real UI + Deepgram E2E proof:
 
 ```bash
 npm run test:e2e:deepgram-ui
 ```
 
-That script launches Chrome, loads the actual app UI, streams a public AMI meeting WAV fixture through the app's Deepgram Nova WebSocket path, and fails unless the UI renders a full transcript with at least two automatic speaker labels.
+See [`docs/testing.md`](docs/testing.md) for details on the test suite and what each test proves.
+
+## Security note
+
+`VITE_DEEPGRAM_API_KEY` is exposed to browser JavaScript. This is acceptable only for local development/testing with a disposable or rotated key.
+
+For production, do **not** ship a long-lived Deepgram key in the browser. Use one of:
+
+- backend proxy
+- short-lived token endpoint
+- server-generated temporary credentials
+
+## Removed functionality
+
+The following legacy/fallback paths have been removed:
+
+- manual speaker picker
+- browser Web Speech fallback engine
+- static accessibility demo page
+- static demo JavaScript/CSS
+
+The main app is now Deepgram Nova automatic diarization only.
