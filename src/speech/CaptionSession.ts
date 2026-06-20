@@ -101,10 +101,7 @@ export class CaptionSession {
   }
 
   getState(): CaptionSessionState {
-    return {
-      ...this.state,
-      captions: [...this.state.captions],
-    };
+    return { ...this.state };
   }
 
   getCaptions(): CaptionLine[] {

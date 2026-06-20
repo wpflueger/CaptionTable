@@ -23,6 +23,7 @@ export interface SilenceGateOptions {
   speechThreshold?: number;
   silenceTimeoutMs?: number;
   minConnectionMs?: number;
+  preRollMs?: number;
 }
 
 export interface MediaStreamOptions {
@@ -71,6 +72,7 @@ const DEFAULT_SILENCE_GATE: Required<SilenceGateOptions> = {
   speechThreshold: 0.025,
   silenceTimeoutMs: 60_000,
   minConnectionMs: 10_000,
+  preRollMs: 1500,
 };
 
 export class DeepgramNovaSpeechEngine implements SpeechEngine {
@@ -95,8 +97,13 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
   private fixtureTimer: number | null = null;
   private connecting = false;
   private closingForSilence = false;
+  private pausedForSilence = false;
+  private stoppingAudioSource: Promise<void> | null = null;
   private lastSpeechAt = 0;
   private connectedAt = 0;
+  private preRollMaxBytes = 0;
+  private preRollBytes = 0;
+  private preRollChunks: ArrayBuffer[] = [];
   private sentFirstAudioChunk = false;
   private audioChunksSent = 0;
   private audioBytesSent = 0;
@@ -121,6 +128,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
 
     this.manuallyStopped = false;
     this.closingForSilence = false;
+    this.pausedForSilence = false;
     this.connecting = false;
     this.connectedAt = 0;
     this.lastSpeechAt = 0;
@@ -160,12 +168,19 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     this.socket = null;
     this.connecting = false;
     this.closingForSilence = false;
+    this.pausedForSilence = false;
 
     if (this.ownsAudioSource && this.audioSource) {
-      void this.audioSource.stop();
+      const source = this.audioSource;
       this.audioSource = null;
       this.ownsAudioSource = false;
+      this.stoppingAudioSource = source.stop().finally(() => {
+        if (this.stoppingAudioSource) this.stoppingAudioSource = null;
+      });
+      void this.stoppingAudioSource;
     }
+
+    this.clearPreRoll();
   }
 
   setMediaStream(stream: MediaStream | null, options: MediaStreamOptions = {}): void {
@@ -194,7 +209,12 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
   private async startLiveSession(): Promise<void> {
     try {
       const source = await this.ensureAudioSource();
+      const info = source.info;
+      if (!info) throw new Error('Audio source is not ready.');
+
+      this.preRollMaxBytes = Math.max(0, Math.ceil(info.sampleRate * info.channels * 2 * (this.silenceGate.preRollMs / 1000)));
       this.unsubscribeLevel = source.subscribeLevel((level) => this.handleInputLevel(level));
+      this.unsubscribePcm = source.subscribePcm((pcm) => this.handlePcm(pcm));
 
       if (this.silenceGate.enabled) {
         this.callbacks.onStatusChange?.('Waiting for speech before connecting to Deepgram…');
@@ -212,6 +232,10 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
   }
 
   private async ensureAudioSource(): Promise<AudioPipeline> {
+    if (this.stoppingAudioSource) {
+      await this.stoppingAudioSource;
+    }
+
     if (!this.audioSource) {
       if (!navigator.mediaDevices?.getUserMedia && !this.providedStream) {
         throw new Error(SPEECH_ERROR_MESSAGES['transcription-unavailable']);
@@ -234,21 +258,31 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
   private async connectAudioSource(): Promise<void> {
     if (!this.active || this.connecting || this.socket?.readyState === WebSocket.OPEN) return;
 
-    const source = await this.ensureAudioSource();
-    const info = source.info;
-    if (!info) throw new Error('Audio source is not ready.');
-
     this.connecting = true;
-    this.closingForSilence = false;
-    this.createSocket(info.sampleRate, info.channels, {
-      onOpen: () => {
-        this.connecting = false;
-        this.connectedAt = Date.now();
-        this.callbacks.onStatusChange?.(`Connected to Deepgram. Streaming ${info.sampleRate}Hz PCM audio${info.worklet ? ' via AudioWorklet' : ' via ScriptProcessor fallback'}…`);
-        this.unsubscribePcm?.();
-        this.unsubscribePcm = source.subscribePcm((pcm) => this.sendPcm(pcm));
-      },
-    });
+    try {
+      const source = await this.ensureAudioSource();
+      const info = source.info;
+      if (!info) throw new Error('Audio source is not ready.');
+
+      this.closingForSilence = false;
+      this.createSocket(info.sampleRate, info.channels, {
+        onOpen: () => {
+          this.connecting = false;
+          this.connectedAt = Date.now();
+          const resumedAfterSilence = this.pausedForSilence;
+          this.pausedForSilence = false;
+          this.callbacks.onStatusChange?.(
+            resumedAfterSilence
+              ? `Reconnected to Deepgram after silence. Speaker labels may restart.`
+              : `Connected to Deepgram. Streaming ${info.sampleRate}Hz PCM audio${info.worklet ? ' via AudioWorklet' : ' via ScriptProcessor fallback'}…`,
+          );
+          this.flushPreRoll();
+        },
+      });
+    } catch (error) {
+      this.connecting = false;
+      throw error;
+    }
   }
 
   private async startFixtureSession(): Promise<void> {
@@ -283,35 +317,44 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
       channels: String(channels),
     });
 
-    this.socket = new WebSocket(`wss://api.deepgram.com/v1/listen?${params.toString()}`, ['token', this.apiKey]);
-    this.socket.onopen = () => {
-      if (!this.socket || !this.active) return;
+    const socket = new WebSocket(`wss://api.deepgram.com/v1/listen?${params.toString()}`, ['token', this.apiKey]);
+    this.socket = socket;
+    socket.onopen = () => {
+      if (this.socket !== socket || !this.active) return;
       handlers.onOpen();
       this.startKeepAlive();
     };
-    this.socket.onmessage = (event) => this.handleMessage(event.data);
-    this.socket.onerror = (event) => {
+    socket.onmessage = (event) => {
+      if (this.socket !== socket) return;
+      this.handleMessage(event.data);
+    };
+    socket.onerror = (event) => {
+      if (this.socket !== socket) return;
       this.connecting = false;
       this.active = false;
       this.callbacks.onActiveChange?.(false);
       this.callbacks.onStatusChange?.('Deepgram connection error.');
+      this.unsubscribeFromAudio();
       this.emitError({ code: 'connectivity-loss', message: SPEECH_ERROR_MESSAGES['connectivity-loss'], cause: event });
     };
-    this.socket.onclose = (event) => {
+    socket.onclose = (event) => {
+      if (this.socket !== socket) return;
       this.connecting = false;
       this.clearKeepAlive();
       this.clearFixtureTimer();
-      this.unsubscribePcm?.();
-      this.unsubscribePcm = null;
       this.flushAudioStats(true);
 
       if (this.closingForSilence && this.active && !this.manuallyStopped) {
         this.closingForSilence = false;
+        this.pausedForSilence = true;
+        this.socket = null;
         this.callbacks.onStatusChange?.('Paused Deepgram after sustained silence. Waiting for speech…');
         return;
       }
 
+      this.socket = null;
       if (!this.manuallyStopped) {
+        this.unsubscribeFromAudio();
         this.active = false;
         this.callbacks.onActiveChange?.(false);
         const reason = event.reason ? ` (${event.code}: ${event.reason})` : ` (${event.code})`;
@@ -353,6 +396,42 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     this.socket.close();
   }
 
+  private handlePcm(pcm: ArrayBuffer): void {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.sendPcm(pcm);
+      return;
+    }
+
+    this.bufferPreRoll(pcm);
+  }
+
+  private bufferPreRoll(pcm: ArrayBuffer): void {
+    if (!this.preRollMaxBytes) return;
+
+    const copy = pcm.slice(0);
+    this.preRollChunks.push(copy);
+    this.preRollBytes += copy.byteLength;
+
+    while (this.preRollBytes > this.preRollMaxBytes && this.preRollChunks.length) {
+      const removed = this.preRollChunks.shift();
+      this.preRollBytes -= removed?.byteLength ?? 0;
+    }
+  }
+
+  private flushPreRoll(): void {
+    if (!this.preRollChunks.length) return;
+
+    const chunks = this.preRollChunks;
+    this.preRollChunks = [];
+    this.preRollBytes = 0;
+    chunks.forEach((chunk) => this.sendPcm(chunk));
+  }
+
+  private clearPreRoll(): void {
+    this.preRollChunks = [];
+    this.preRollBytes = 0;
+  }
+
   private sendPcm(pcm: ArrayBuffer): void {
     if (this.socket?.readyState !== WebSocket.OPEN) return;
 
@@ -362,8 +441,6 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     if (!this.sentFirstAudioChunk) {
       this.sentFirstAudioChunk = true;
       this.callbacks.onStatusChange?.('Audio is streaming to Deepgram. Waiting for transcript…');
-    } else if (this.audioChunksSent % 50 === 0) {
-      this.callbacks.onStatusChange?.(`Audio is streaming to Deepgram (${this.audioChunksSent} chunks, ${Math.round(this.audioBytesSent / 1024)} KB). Waiting for transcript…`);
     }
   }
 

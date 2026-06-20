@@ -93,7 +93,8 @@ h1 { margin: 0; font-size: clamp(2.6rem, 9vw, 6.8rem); line-height: 0.95; }
 .session-notices p { margin: 0.25rem 0; }
 .interim-badge { justify-self: center; align-self: start; margin-top: -2rem; padding: 0.4rem 0.75rem; border-radius: 999px; color: #06111f; background: #facc15; font-weight: 900; }
 .turns-panel h2 { margin: 0 0 1rem; }
-.transcript-window-note { margin: -0.35rem 0 1rem; color: #c5d8e8; font-size: 0.95rem; }
+.transcript-history-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: -0.35rem 0 1rem; }
+.transcript-window-note { margin: 0; color: #c5d8e8; font-size: 0.95rem; }
 .turn-list { display: grid; gap: 0.8rem; }
 .transcript-list { max-height: min(62vh, 760px); overflow-y: auto; overscroll-behavior: contain; padding-right: 0.3rem; scroll-behavior: smooth; }
 .turn-card, .empty-state { padding: 1rem; border-radius: 20px; background: rgba(255, 255, 255, 0.1); }

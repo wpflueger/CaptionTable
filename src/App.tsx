@@ -29,6 +29,10 @@ const languageOptions = [
 
 const automaticSpeakerIdEnabled = Boolean(deepgramApiKey);
 const TRANSCRIPT_RENDER_WINDOW = 500;
+const LIVE_SPEECH_THRESHOLD = 0.025;
+const LIVE_SILENCE_TIMEOUT_MS = 60_000;
+const LIVE_MIN_DEEPGRAM_CONNECTION_MS = 10_000;
+const LIVE_PRE_ROLL_MS = 1500;
 
 export function App() {
   const [captionState, setCaptionState] = useState<CaptionSessionState>(initialCaptionState);
@@ -51,7 +55,13 @@ export function App() {
       language,
       model: 'nova-3',
       audioFixtureUrl: e2eAudioFixtureUrl,
-      silenceGate: { enabled: !e2eAudioFixtureUrl, speechThreshold: 0.025, silenceTimeoutMs: 60_000, minConnectionMs: 10_000 },
+      silenceGate: {
+        enabled: !e2eAudioFixtureUrl,
+        speechThreshold: LIVE_SPEECH_THRESHOLD,
+        silenceTimeoutMs: LIVE_SILENCE_TIMEOUT_MS,
+        minConnectionMs: LIVE_MIN_DEEPGRAM_CONNECTION_MS,
+        preRollMs: LIVE_PRE_ROLL_MS,
+      },
     }),
     [],
   );
@@ -88,6 +98,12 @@ export function App() {
     scrollTranscriptToBottom(transcriptRef.current);
   }, [captions]);
 
+  useEffect(() => {
+    if (!captionState.active && captionState.error && stopAudioPipelineRef.current) {
+      void stopLocalAudioAfterEngineFailure();
+    }
+  }, [captionState.active, captionState.error]);
+
   const latestCaption = captions.at(-1) ?? null;
   const transcriptCaptions = captions;
   const selectedLanguageLabel = languageOptions.find((option) => option.value === language)?.label ?? language;
@@ -121,13 +137,22 @@ export function App() {
   }
 
   async function stopCaptions() {
+    captionSession.stop();
+    await stopLocalAudio('Stopped');
+    await lifecycle.stop();
+  }
+
+  async function stopLocalAudio(status: string): Promise<void> {
     await stopAudioPipelineRef.current?.();
     stopAudioPipelineRef.current = null;
     setVolumePercent(0);
-    setMicrophoneStatus('Stopped');
+    setMicrophoneStatus(status);
     speechEngine.setAudioSource(null);
     speechEngine.setMediaStream(null);
-    captionSession.stop();
+  }
+
+  async function stopLocalAudioAfterEngineFailure(): Promise<void> {
+    await stopLocalAudio('Stopped after Deepgram connection failure.');
     await lifecycle.stop();
   }
 
@@ -343,14 +368,30 @@ const TranscriptPanel = memo(function TranscriptPanel({
   captions: CaptionLine[];
   transcriptRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  const hiddenCount = Math.max(0, captions.length - TRANSCRIPT_RENDER_WINDOW);
-  const renderedCaptions = hiddenCount ? captions.slice(-TRANSCRIPT_RENDER_WINDOW) : captions;
+  const [visibleCount, setVisibleCount] = useState(TRANSCRIPT_RENDER_WINDOW);
+  const hiddenCount = Math.max(0, captions.length - visibleCount);
+  const renderedCaptions = hiddenCount ? captions.slice(-visibleCount) : captions;
+
+  useEffect(() => {
+    if (captions.length <= TRANSCRIPT_RENDER_WINDOW && visibleCount !== TRANSCRIPT_RENDER_WINDOW) {
+      setVisibleCount(TRANSCRIPT_RENDER_WINDOW);
+    }
+  }, [captions.length, visibleCount]);
 
   return (
     <section className="turns-panel transcript-panel" aria-labelledby="transcript-heading">
       <h2 id="transcript-heading">Full speaker transcript</h2>
       {hiddenCount ? (
-        <p className="transcript-window-note">Showing latest {TRANSCRIPT_RENDER_WINDOW} of {captions.length} transcript turns.</p>
+        <div className="transcript-history-controls">
+          <p className="transcript-window-note">Showing latest {renderedCaptions.length} of {captions.length} transcript turns.</p>
+          <button
+            className="secondary-action"
+            type="button"
+            onClick={() => setVisibleCount((count) => Math.min(captions.length, count + TRANSCRIPT_RENDER_WINDOW))}
+          >
+            Load earlier turns
+          </button>
+        </div>
       ) : null}
       <div className="turn-list transcript-list" ref={transcriptRef}>
         {renderedCaptions.length ? (

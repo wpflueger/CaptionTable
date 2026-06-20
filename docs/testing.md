@@ -8,6 +8,7 @@ This document describes the current test coverage and the automated end-to-end p
 npm test
 npm run build
 npm run test:deepgram:ami
+npm run test:e2e:audio-pipeline
 npm run test:e2e:deepgram-ui
 ```
 
@@ -54,7 +55,10 @@ Verifies:
 - shared media stream avoids a second `getUserMedia` call
 - provided streams are only stopped when ownership is explicit
 - local VAD/silence gating waits for speech before connecting Deepgram
+- pre-roll PCM captured before WebSocket open is sent after connect
 - sustained silence closes Deepgram and resumed speech reconnects
+- stale socket close events are ignored after reconnect
+- rapid repeated VAD speech events produce only one connecting socket
 - stop cleans up PCM nodes, keepalive, socket, and active state
 
 ### `App`
@@ -70,7 +74,9 @@ Verifies:
 - full speaker transcript panel appears
 - old `Recent finalized captions` panel does not appear
 - automatic speaker labels appear in the active caption and transcript
-- long transcript rendering is windowed to the latest 500 turns
+- long transcript rendering starts with the latest 500 turns
+- older transcript turns remain accessible through the Load earlier turns history control
+- fatal Deepgram errors stop the App-owned local microphone pipeline
 
 ## Build test
 
@@ -81,6 +87,23 @@ npm run build
 ```
 
 This validates TypeScript build references and the Vite production bundle.
+
+## Browser-level AudioPipeline / AudioWorklet check
+
+Run:
+
+```bash
+npm run test:e2e:audio-pipeline
+```
+
+This launches Chrome with fake media devices, imports the real Vite-served `BrowserAudioPipeline`, starts the live microphone pipeline, and fails unless:
+
+- Chrome uses the `AudioWorkletNode` path
+- mic level messages are emitted
+- PCM chunks are emitted
+- the pipeline stops cleanly
+
+This complements the Deepgram UI fixture E2E, which intentionally bypasses the live microphone path.
 
 ## AMI prerecorded Deepgram integration check
 
@@ -197,7 +220,7 @@ The UI diagnostics exist to troubleshoot physical microphone sessions:
 - Deepgram status
 - local VAD waiting/paused/connecting state
 
-Physical mic sessions now use local silence gating. Deepgram does not connect until speech crosses the local threshold, closes after sustained silence, and reconnects when speech resumes. This reduces idle streaming but can reset Deepgram speaker numbering across long idle reconnects.
+Physical mic sessions now use local silence gating. Deepgram does not connect until speech crosses the local threshold, uses a short local pre-roll buffer to reduce first-word clipping, closes after sustained silence, and reconnects when speech resumes. This reduces idle streaming but can reset Deepgram speaker numbering across long idle reconnects; the UI status warns when this happens.
 
 ## Security note for tests
 

@@ -253,6 +253,49 @@ describe('DeepgramNovaSpeechEngine', () => {
     ]);
   });
 
+  it('sends pre-roll PCM captured before the Deepgram socket opens', async () => {
+    const statuses: string[] = [];
+    const source = new FakeAudioPipeline();
+    const engine = new DeepgramNovaSpeechEngine({
+      apiKey: 'test-key',
+      audioSource: source,
+      silenceGate: { enabled: true, speechThreshold: 0.1, preRollMs: 1000 },
+    });
+    engine.setCallbacks({ onStatusChange: (status) => statuses.push(status) });
+
+    engine.start();
+    await vi.waitFor(() => expect(statuses).toContain('Waiting for speech before connecting to Deepgram…'));
+    source.emitPcm(16);
+    source.emitPcm(24);
+
+    source.emitLevel(0.2);
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.onopen?.();
+
+    const binaryPayloads = socket.sent.filter((payload) => payload instanceof ArrayBuffer) as ArrayBuffer[];
+    expect(binaryPayloads.map((payload) => payload.byteLength)).toEqual([16, 24]);
+  });
+
+  it('creates only one socket for rapid repeated VAD speech events while connecting', async () => {
+    const statuses: string[] = [];
+    const source = new FakeAudioPipeline();
+    const engine = new DeepgramNovaSpeechEngine({
+      apiKey: 'test-key',
+      audioSource: source,
+      silenceGate: { enabled: true, speechThreshold: 0.1 },
+    });
+    engine.setCallbacks({ onStatusChange: (status) => statuses.push(status) });
+
+    engine.start();
+    await vi.waitFor(() => expect(statuses).toContain('Waiting for speech before connecting to Deepgram…'));
+    source.emitLevel(0.2);
+    source.emitLevel(0.2);
+    source.emitLevel(0.2);
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+  });
+
   it('pauses Deepgram during sustained silence and reconnects on resumed speech', async () => {
     const statuses: string[] = [];
     const source = new FakeAudioPipeline();
@@ -281,6 +324,40 @@ describe('DeepgramNovaSpeechEngine', () => {
 
     source.emitLevel(0.2);
     await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+  });
+
+  it('ignores stale socket close events after reconnect', async () => {
+    const activeStates: boolean[] = [];
+    const source = new FakeAudioPipeline();
+    const engine = new DeepgramNovaSpeechEngine({
+      apiKey: 'test-key',
+      audioSource: source,
+      silenceGate: { enabled: true, speechThreshold: 0.1, silenceTimeoutMs: 1000, minConnectionMs: 500 },
+    });
+    const statuses: string[] = [];
+    engine.setCallbacks({
+      onActiveChange: (active) => activeStates.push(active),
+      onStatusChange: (status) => statuses.push(status),
+    });
+
+    engine.start();
+    await vi.waitFor(() => expect(statuses).toContain('Waiting for speech before connecting to Deepgram…'));
+    source.emitLevel(0.2);
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const firstSocket = FakeWebSocket.instances[0];
+    firstSocket.onopen?.();
+
+    vi.advanceTimersByTime(1500);
+    source.emitLevel(0);
+    source.emitLevel(0.2);
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+    const secondSocket = FakeWebSocket.instances[1];
+    secondSocket.onopen?.();
+
+    firstSocket.onclose?.({ code: 4000, reason: 'stale close' });
+    expect(activeStates.at(-1)).toBe(true);
+    source.emitPcm(12);
+    expect(secondSocket.sent.some((payload) => payload instanceof ArrayBuffer)).toBe(true);
   });
 
   it('cleans up PCM nodes, socket, keepalive, and active state on stop', async () => {

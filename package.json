@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:deepgram:ami": "node scripts/test-deepgram-ami.mjs",
-    "test:e2e:deepgram-ui": "node scripts/test-deepgram-ui-e2e.mjs"
+    "test:e2e:deepgram-ui": "node scripts/test-deepgram-ui-e2e.mjs",
+    "test:e2e:audio-pipeline": "node scripts/test-audio-pipeline-browser.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

@@ -6,6 +6,7 @@ const hoisted = vi.hoisted(() => ({
   deepgramKey: 'test-key',
   callbacks: undefined as import('./speech').SpeechEngineCallbacks | undefined,
   active: false,
+  micStop: vi.fn(),
 }));
 
 vi.mock('./speech', async (importOriginal) => {
@@ -61,7 +62,7 @@ function installBrowserFakes() {
   Object.defineProperty(navigator, 'mediaDevices', {
     configurable: true,
     value: {
-      getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: vi.fn() }] })),
+      getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: hoisted.micStop }] })),
     },
   });
 
@@ -94,6 +95,7 @@ describe('App', () => {
     hoisted.deepgramKey = 'test-key';
     hoisted.callbacks = undefined;
     hoisted.active = false;
+    hoisted.micStop = vi.fn();
     installBrowserFakes();
   });
 
@@ -157,5 +159,24 @@ describe('App', () => {
     expect(await screen.findByText('Showing latest 500 of 550 transcript turns.')).toBeInTheDocument();
     expect(screen.queryByText('caption 1')).not.toBeInTheDocument();
     expect(screen.getAllByText('caption 550')).toHaveLength(2);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Load earlier turns' }));
+    expect(await screen.findByText('caption 1')).toBeInTheDocument();
+  });
+
+  it('stops local audio UI state when Deepgram fails unexpectedly', async () => {
+    vi.stubEnv('VITE_DEEPGRAM_API_KEY', 'test-key');
+    const { App } = await import('./App');
+    render(<App />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start Captions' }));
+    expect(await screen.findByText('Full speaker transcript')).toBeInTheDocument();
+
+    act(() => {
+      hoisted.callbacks?.onError?.({ code: 'connectivity-loss', message: 'failed' });
+      hoisted.callbacks?.onActiveChange?.(false);
+    });
+
+    await waitFor(() => expect(hoisted.micStop).toHaveBeenCalled());
   });
 });

@@ -71,30 +71,37 @@ export class BrowserAudioPipeline implements AudioPipeline {
   async start(): Promise<AudioPipelineInfo> {
     if (this.startedInfo) return this.startedInfo;
 
-    if (!navigator.mediaDevices?.getUserMedia && !this.providedStream) {
-      throw new Error('Microphone capture is not available in this browser.');
-    }
+    try {
+      if (!navigator.mediaDevices?.getUserMedia && !this.providedStream) {
+        throw new Error('Microphone capture is not available in this browser.');
+      }
 
-    const AudioContextCtor = window.AudioContext || (window as BrowserAudioWindow).webkitAudioContext;
-    if (!AudioContextCtor) {
-      throw new Error('Web Audio is not available in this browser.');
-    }
+      const AudioContextCtor = window.AudioContext || (window as BrowserAudioWindow).webkitAudioContext;
+      if (!AudioContextCtor) {
+        throw new Error('Web Audio is not available in this browser.');
+      }
 
-    this.stream = this.providedStream ?? await navigator.mediaDevices.getUserMedia({ audio: true });
-    this.streamOwned = this.providedStream ? this.ownsProvidedStream : true;
-    this.audioContext = new AudioContextCtor();
-    if (this.audioContext.state === 'suspended') {
-      await this.audioContext.resume();
-    }
+      this.stream = this.providedStream ?? await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.streamOwned = this.providedStream ? this.ownsProvidedStream : true;
+      this.audioContext = new AudioContextCtor();
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
 
-    this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
-    const usedWorklet = await this.connectProcessingNode();
-    this.startedInfo = {
-      sampleRate: Math.round(this.audioContext.sampleRate),
-      channels: 1,
-      worklet: usedWorklet,
-    };
-    return this.startedInfo;
+      this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
+      const usedWorklet = await this.connectProcessingNode();
+      this.startedInfo = {
+        sampleRate: Math.round(this.audioContext.sampleRate),
+        channels: 1,
+        worklet: usedWorklet,
+      };
+      return this.startedInfo;
+    } catch (error) {
+      await this.stop().catch((cleanupError) => {
+        console.warn('Audio pipeline cleanup after failed start also failed.', cleanupError);
+      });
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {

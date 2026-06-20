@@ -10,10 +10,11 @@ The current app is **Deepgram Nova only** for transcription and automatic speake
 - Uses `AudioWorkletNode` for PCM conversion/chunking when available, with a `ScriptProcessorNode` fallback for incompatible browsers.
 - Keeps local mic-level monitoring active while the session is running.
 - Opens the Deepgram Nova WebSocket when local speech is detected.
+- Keeps a short local PCM pre-roll buffer so the beginning of speech can be sent when Deepgram finishes reconnecting.
 - Closes the Deepgram stream after sustained silence and reconnects when speech resumes.
 - Requests automatic speaker diarization with `diarize=true`.
 - Displays the current live caption in a large high-visibility panel.
-- Displays a full speaker-labeled transcript while rendering only the latest transcript window for long-session performance.
+- Displays a full speaker-labeled transcript with a long-session history control to load earlier turns instead of silently dropping older transcript cards.
 - Labels speakers as Deepgram returns them, e.g. `Person 1`, `Person 2`.
 - Disables Start if `VITE_DEEPGRAM_API_KEY` is missing.
 
@@ -147,6 +148,7 @@ Useful states:
 | `Connected to Deepgram...` | WebSocket opened successfully |
 | `Audio is streaming to Deepgram...` | Audio bytes are being sent |
 | `Paused Deepgram after sustained silence...` | local mic stays active, but Deepgram has been closed to avoid streaming silence |
+| `Reconnected to Deepgram after silence. Speaker labels may restart.` | Deepgram reconnected after idle; diarization labels may reset across the segment boundary |
 | `Live transcript received.` | Deepgram sent interim transcript text |
 | `Final transcript received.` | Deepgram sent finalized transcript text |
 | `Audio sent: 0 chunks / 0 KB` | local speech has not triggered Deepgram audio streaming yet, or the browser audio path is not producing audio |
@@ -212,6 +214,12 @@ Production build check:
 
 ```bash
 npm run build
+```
+
+Browser-level live audio pipeline/AudioWorklet proof:
+
+```bash
+npm run test:e2e:audio-pipeline
 ```
 
 Real Deepgram prerecorded AMI diarization check:

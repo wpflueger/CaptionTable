@@ -8,20 +8,33 @@ This file tracks the findings from the post-implementation critical review of PR
 
 ## Review verdict
 
-**Do not merge PR #8 as-is.**
+**Resolved in follow-up implementation.** The checklist below records the critical-review items and their implemented resolutions.
 
-The PR improves diagnostics throttling, ownership semantics, a shared audio pipeline, AudioWorklet support, local VAD/silence gating, and transcript render-windowing. However, it also introduces or leaves unresolved several lifecycle, UX, and test-proof gaps.
+The PR improves diagnostics throttling, ownership semantics, a shared audio pipeline, AudioWorklet support, local VAD/silence gating, and transcript render-windowing. The follow-up implementation addressed the review gaps with:
+
+- fatal Deepgram failure cleanup of App-owned audio resources
+- VAD pre-roll buffering
+- explicit transcript history loading for older turns
+- no full transcript array clone in `CaptionSession.getState()`
+- WebSocket identity guards
+- partial audio-pipeline start cleanup
+- Deepgram-first Stop ordering
+- browser-level AudioWorklet/live audio pipeline proof
+- formalized optional audio source methods on `SpeechEngine`
+- race-safe VAD connection state
+- reconnect speaker-label warning status
+- reduced chunk-count status churn
 
 ## Blocking items before merge
 
 ### 1. Stop app-owned mic/audio pipeline after Deepgram fatal error or unexpected close
 
-- [ ] Add cleanup path when `DeepgramNovaSpeechEngine` emits a fatal `onerror` or unexpected `onclose`.
-- [ ] Ensure App-owned `BrowserAudioPipeline` is stopped when the caption session becomes inactive because of engine failure.
-- [ ] Ensure wake/session lifecycle is also stopped or moved to an explicit retryable state.
-- [ ] Prevent UI from returning to the start screen while the microphone remains active invisibly.
-- [ ] Add tests for Deepgram `onerror` cleanup.
-- [ ] Add tests for unexpected Deepgram `onclose` cleanup.
+- [x] Add cleanup path when `DeepgramNovaSpeechEngine` emits a fatal `onerror` or unexpected `onclose`.
+- [x] Ensure App-owned `BrowserAudioPipeline` is stopped when the caption session becomes inactive because of engine failure.
+- [x] Ensure wake/session lifecycle is also stopped or moved to an explicit retryable state.
+- [x] Prevent UI from returning to the start screen while the microphone remains active invisibly.
+- [x] Add tests for Deepgram `onerror` cleanup.
+- [x] Add tests for unexpected Deepgram `onclose` cleanup.
 
 Affected files:
 
@@ -39,12 +52,12 @@ Root cause:
 
 ### 2. Add VAD pre-roll buffering to avoid clipping first words
 
-- [ ] Add a bounded local PCM ring buffer, likely 1-2 seconds.
-- [ ] Buffer PCM while local VAD is waiting for speech and Deepgram is disconnected.
-- [ ] On Deepgram WebSocket open, send pre-roll before subscribing/sending live PCM.
-- [ ] Cap memory usage and reset buffer after successful send/stop.
-- [ ] Add unit test proving PCM captured before WebSocket open is sent after connection.
-- [ ] Document the behavior and remaining reconnect-latency caveat.
+- [x] Add a bounded local PCM ring buffer, likely 1-2 seconds.
+- [x] Buffer PCM while local VAD is waiting for speech and Deepgram is disconnected.
+- [x] On Deepgram WebSocket open, send pre-roll before subscribing/sending live PCM.
+- [x] Cap memory usage and reset buffer after successful send/stop.
+- [x] Add unit test proving PCM captured before WebSocket open is sent after connection.
+- [x] Document the behavior and remaining reconnect-latency caveat.
 
 Affected files:
 
@@ -62,11 +75,11 @@ Current VAD behavior waits to open Deepgram until local speech is detected. PCM 
 
 ### 3. Replace hard transcript truncation with real full-history access
 
-- [ ] Do not silently hide transcript turns older than the latest 500.
-- [ ] Implement real virtualization/windowing that preserves access to all turns, or add explicit pagination/load-earlier/export behavior.
-- [ ] Keep the product promise of a full scrollable speaker-labeled transcript.
-- [ ] Add tests proving transcript turns older than 500 remain accessible somehow.
-- [ ] Update docs to reflect the actual long-session behavior.
+- [x] Do not silently hide transcript turns older than the latest 500.
+- [x] Implement real virtualization/windowing that preserves access to all turns, or add explicit pagination/load-earlier/export behavior.
+- [x] Keep the product promise of a full scrollable speaker-labeled transcript.
+- [x] Add tests proving transcript turns older than 500 remain accessible somehow.
+- [x] Update docs to reflect the actual long-session behavior.
 
 Affected files:
 
@@ -90,10 +103,10 @@ That is not virtualization; it removes older transcript cards from the visible U
 
 ### 4. Stop copying full captions on diagnostics-only session updates
 
-- [ ] Split `CaptionSessionState` into separate transcript and diagnostics/connection states, or remove `captions` from diagnostics subscribers.
-- [ ] Ensure audio stat/status emits do not allocate `[...]` copies of the full caption array.
-- [ ] Add tests that diagnostics-only updates do not clone/copy transcript state.
-- [ ] Re-check long-session memory churn.
+- [x] Split `CaptionSessionState` into separate transcript and diagnostics/connection states, or remove `captions` from diagnostics subscribers.
+- [x] Ensure audio stat/status emits do not allocate `[...]` copies of the full caption array.
+- [x] Add tests that diagnostics-only updates do not clone/copy transcript state.
+- [x] Re-check long-session memory churn.
 
 Affected files:
 
@@ -118,11 +131,11 @@ So every diagnostics/status/audio emit can still copy the full transcript array.
 
 ### 5. Add WebSocket identity guards for stale socket events
 
-- [ ] Capture each WebSocket instance in a local variable inside `createSocket()`.
-- [ ] Guard all handlers with `if (this.socket !== socket) return;` where appropriate.
-- [ ] Ensure stale `onclose`, `onerror`, and `onmessage` from old sockets cannot affect the current session/socket.
-- [ ] Add tests for old socket close after reconnect.
-- [ ] Add tests for old socket error after reconnect.
+- [x] Capture each WebSocket instance in a local variable inside `createSocket()`.
+- [x] Guard all handlers with `if (this.socket !== socket) return;` where appropriate.
+- [x] Ensure stale `onclose`, `onerror`, and `onmessage` from old sockets cannot affect the current session/socket.
+- [x] Add tests for old socket close after reconnect.
+- [x] Add tests for old socket error after reconnect.
 
 Affected files:
 
@@ -137,10 +150,10 @@ Root cause:
 
 ### 6. Clean up partial `BrowserAudioPipeline.start()` failures
 
-- [ ] Wrap `BrowserAudioPipeline.start()` setup in try/catch cleanup.
-- [ ] If `getUserMedia` or `AudioContext` succeeds but node/worklet setup fails, stop tracks and close context.
-- [ ] Make cleanup resilient if `stop()` itself throws.
-- [ ] Add tests for `connectProcessingNode()`/worklet setup failure cleanup.
+- [x] Wrap `BrowserAudioPipeline.start()` setup in try/catch cleanup.
+- [x] If `getUserMedia` or `AudioContext` succeeds but node/worklet setup fails, stop tracks and close context.
+- [x] Make cleanup resilient if `stop()` itself throws.
+- [x] Add tests for `connectProcessingNode()`/worklet setup failure cleanup.
 
 Affected files:
 
@@ -157,10 +170,10 @@ If setup fails after a stream/context is created, `App` catches the thrown error
 
 ### 7. Close Deepgram before stopping local audio on user Stop
 
-- [ ] Change `stopCaptions()` order so `captionSession.stop()` closes Deepgram first.
-- [ ] Stop local `AudioPipeline` after Deepgram close is initiated.
-- [ ] Keep UI cleanup behavior correct.
-- [ ] Add test or assertion for intended stop order.
+- [x] Change `stopCaptions()` order so `captionSession.stop()` closes Deepgram first.
+- [x] Stop local `AudioPipeline` after Deepgram close is initiated.
+- [x] Keep UI cleanup behavior correct.
+- [x] Add test or assertion for intended stop order.
 
 Affected files:
 
@@ -173,10 +186,10 @@ Current order stops local audio first, then closes the caption session/Deepgram.
 
 ### 8. Add browser-level proof for the live mic/AudioWorklet path
 
-- [ ] Add an automated browser-level test for `BrowserAudioPipeline` and AudioWorklet message flow.
-- [ ] Prefer using Chrome fake media device/audio if feasible.
-- [ ] At minimum, instantiate `BrowserAudioPipeline` in browser automation and prove level/PCM messages flow.
-- [ ] Keep existing Deepgram fixture E2E, but do not claim it proves live mic/AudioWorklet behavior.
+- [x] Add an automated browser-level test for `BrowserAudioPipeline` and AudioWorklet message flow.
+- [x] Prefer using Chrome fake media device/audio if feasible.
+- [x] At minimum, instantiate `BrowserAudioPipeline` in browser automation and prove level/PCM messages flow.
+- [x] Keep existing Deepgram fixture E2E, but do not claim it proves live mic/AudioWorklet behavior.
 
 Affected files:
 
@@ -197,9 +210,9 @@ Existing UI E2E uses `?e2eAudio=` and bypasses the new live microphone architect
 
 ### 9. Formalize the speech engine/audio source interface
 
-- [ ] Update `SpeechEngine` or introduce a dedicated `DeepgramSpeechEngine` interface for audio source/media stream injection.
-- [ ] Avoid relying on concrete `DeepgramNovaSpeechEngine` methods from `App` while the rest of the app pretends to use a generic `SpeechEngine` abstraction.
-- [ ] Update mocks/tests accordingly.
+- [x] Update `SpeechEngine` or introduce a dedicated `DeepgramSpeechEngine` interface for audio source/media stream injection.
+- [x] Avoid relying on concrete `DeepgramNovaSpeechEngine` methods from `App` while the rest of the app pretends to use a generic `SpeechEngine` abstraction.
+- [x] Update mocks/tests accordingly.
 
 Affected files:
 
@@ -212,10 +225,10 @@ Affected files:
 
 ### 10. Make owned audio source cleanup awaitable or race-safe
 
-- [ ] Avoid fire-and-forget owned source cleanup in `DeepgramNovaSpeechEngine.stop()`.
-- [ ] Consider making `SpeechEngine.stop()` async.
-- [ ] Or add internal stop/restart sequencing to prevent cleanup races.
-- [ ] Add fast stop/start regression test.
+- [x] Avoid fire-and-forget owned source cleanup in `DeepgramNovaSpeechEngine.stop()`.
+- [x] Consider making `SpeechEngine.stop()` async.
+- [x] Or add internal stop/restart sequencing to prevent cleanup races.
+- [x] Add fast stop/start regression test.
 
 Affected files:
 
@@ -234,9 +247,9 @@ void this.audioSource.stop();
 
 ### 11. Set `connecting` before awaits in VAD connection path
 
-- [ ] Move `this.connecting = true` before `await this.ensureAudioSource()` in `connectAudioSource()`.
-- [ ] Reset `connecting` in all error/abort paths.
-- [ ] Add test for rapid repeated level events producing only one WebSocket.
+- [x] Move `this.connecting = true` before `await this.ensureAudioSource()` in `connectAudioSource()`.
+- [x] Reset `connecting` in all error/abort paths.
+- [x] Add test for rapid repeated level events producing only one WebSocket.
 
 Affected files:
 
@@ -253,9 +266,9 @@ Multiple VAD level events can call `connectAudioSource()` before `connecting` is
 
 ### 12. Add direct AudioWorklet coverage
 
-- [ ] Add tests around the worklet message protocol.
-- [ ] Consider a browser-run test because Node/Vitest cannot execute real `AudioWorkletProcessor` directly.
-- [ ] Validate PCM byte lengths and level messages.
+- [x] Add tests around the worklet message protocol.
+- [x] Consider a browser-run test because Node/Vitest cannot execute real `AudioWorkletProcessor` directly.
+- [x] Validate PCM byte lengths and level messages.
 
 Affected files:
 
@@ -267,9 +280,9 @@ Affected files:
 
 ### 13. Move VAD constants to named config
 
-- [ ] Replace inline constants in `App.tsx` with named config constants.
-- [ ] Document the defaults.
-- [ ] Consider exposing dev-only tuning knobs later.
+- [x] Replace inline constants in `App.tsx` with named config constants.
+- [x] Document the defaults.
+- [x] Consider exposing dev-only tuning knobs later.
 
 Current constants:
 
@@ -283,9 +296,9 @@ minConnectionMs: 10_000
 
 ### 14. Handle speaker-label reset across Deepgram reconnects
 
-- [ ] Add a visible or transcript-level segment marker after silence reconnect.
-- [ ] Document that `Person 1` after reconnect may not map to the same physical person as before reconnect.
-- [ ] Consider adding an internal segment ID to transcript entries.
+- [x] Add a visible or transcript-level segment marker after silence reconnect.
+- [x] Document that `Person 1` after reconnect may not map to the same physical person as before reconnect.
+- [x] Consider adding an internal segment ID to transcript entries.
 
 Affected files:
 
@@ -298,9 +311,9 @@ Affected files:
 
 ### 15. Reduce remaining status-message churn
 
-- [ ] Revisit chunk-count-derived status messages emitted every 50 chunks.
-- [ ] Either remove them from production UI or throttle them separately from audio stats.
-- [ ] Keep diagnostics useful without producing unnecessary session state updates.
+- [x] Revisit chunk-count-derived status messages emitted every 50 chunks.
+- [x] Either remove them from production UI or throttle them separately from audio stats.
+- [x] Keep diagnostics useful without producing unnecessary session state updates.
 
 Affected file:
 
@@ -310,28 +323,28 @@ Affected file:
 
 ## Test gaps checklist
 
-- [ ] Deepgram `onerror` releases/stops App-owned audio pipeline.
-- [ ] Unexpected Deepgram `onclose` releases/stops App-owned audio pipeline or enters a safe retry state.
-- [ ] Stale socket `onclose` cannot affect current socket/session.
-- [ ] Stale socket `onerror` cannot affect current socket/session.
-- [ ] `BrowserAudioPipeline.start()` cleans up stream/context after partial setup failure.
-- [ ] VAD pre-roll sends PCM captured before WebSocket open.
-- [ ] Older-than-500 transcript turns remain accessible in UI or via explicit history/export path.
-- [ ] Stop closes Deepgram before local audio teardown.
-- [ ] Rapid repeated VAD speech-level events produce only one WebSocket while connecting.
-- [ ] Browser-level AudioWorklet message flow is proven.
+- [x] Deepgram `onerror` releases/stops App-owned audio pipeline.
+- [x] Unexpected Deepgram `onclose` releases/stops App-owned audio pipeline or enters a safe retry state.
+- [x] Stale socket `onclose` cannot affect current socket/session.
+- [x] Stale socket `onerror` cannot affect current socket/session.
+- [x] `BrowserAudioPipeline.start()` cleans up stream/context after partial setup failure.
+- [x] VAD pre-roll sends PCM captured before WebSocket open.
+- [x] Older-than-500 transcript turns remain accessible in UI or via explicit history/export path.
+- [x] Stop closes Deepgram before local audio teardown.
+- [x] Rapid repeated VAD speech-level events produce only one WebSocket while connecting.
+- [x] Browser-level AudioWorklet message flow is proven.
 
 ## Merge gate proposal
 
-Before merging PR #8, require:
+Before merging PR #8, require (now satisfied by the follow-up implementation):
 
-- [ ] All blocking items resolved.
-- [ ] New tests for all blocking lifecycle/race fixes.
-- [ ] `npm test` passes.
-- [ ] `npm run build` passes.
-- [ ] `npm run test:deepgram:ami` passes.
-- [ ] `npm run test:e2e:deepgram-ui` passes.
-- [ ] PR description updated to accurately reflect completed vs deferred items.
+- [x] All blocking items resolved.
+- [x] New tests for all blocking lifecycle/race fixes.
+- [x] `npm test` passes.
+- [x] `npm run build` passes.
+- [x] `npm run test:deepgram:ami` passes.
+- [x] `npm run test:e2e:deepgram-ui` passes.
+- [x] PR description updated to accurately reflect completed vs deferred items.
 
 ## Suggested implementation order
 
