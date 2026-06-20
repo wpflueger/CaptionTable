@@ -330,12 +330,12 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     };
     socket.onerror = (event) => {
       if (this.socket !== socket) return;
-      this.connecting = false;
-      this.active = false;
-      this.callbacks.onActiveChange?.(false);
-      this.callbacks.onStatusChange?.('Deepgram connection error.');
-      this.unsubscribeFromAudio();
-      this.emitError({ code: 'connectivity-loss', message: SPEECH_ERROR_MESSAGES['connectivity-loss'], cause: event });
+      this.failConnection({
+        socket,
+        closeSocket: true,
+        statusMessage: 'Deepgram connection error.',
+        error: { code: 'connectivity-loss', message: SPEECH_ERROR_MESSAGES['connectivity-loss'], cause: event },
+      });
     };
     socket.onclose = (event) => {
       if (this.socket !== socket) return;
@@ -352,14 +352,16 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
         return;
       }
 
-      this.socket = null;
       if (!this.manuallyStopped) {
-        this.unsubscribeFromAudio();
-        this.active = false;
-        this.callbacks.onActiveChange?.(false);
         const reason = event.reason ? ` (${event.code}: ${event.reason})` : ` (${event.code})`;
-        this.callbacks.onStatusChange?.(`Deepgram connection closed unexpectedly${reason}.`);
-        this.emitError({ code: 'connectivity-loss', message: `${SPEECH_ERROR_MESSAGES['connectivity-loss']} Deepgram close code: ${event.code}.`, cause: event });
+        this.failConnection({
+          socket,
+          closeSocket: false,
+          statusMessage: `Deepgram connection closed unexpectedly${reason}.`,
+          error: { code: 'connectivity-loss', message: `${SPEECH_ERROR_MESSAGES['connectivity-loss']} Deepgram close code: ${event.code}.`, cause: event },
+        });
+      } else {
+        this.socket = null;
       }
     };
   }
@@ -494,11 +496,15 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     }
 
     if (message.type === 'Error') {
-      this.callbacks.onStatusChange?.('Deepgram returned an error.');
-      this.emitError({
-        code: 'processing-failure',
-        message: message.description || message.reason || message.error || SPEECH_ERROR_MESSAGES['processing-failure'],
-        cause: message,
+      this.failConnection({
+        socket: this.socket,
+        closeSocket: true,
+        statusMessage: 'Deepgram returned an error.',
+        error: {
+          code: 'processing-failure',
+          message: message.description || message.reason || message.error || SPEECH_ERROR_MESSAGES['processing-failure'],
+          cause: message,
+        },
       });
       return;
     }
@@ -563,6 +569,58 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     this.lastAudioStatsChunks = this.audioChunksSent;
     this.lastAudioStatsBytes = this.audioBytesSent;
     this.callbacks.onAudioSend?.({ chunks: this.audioChunksSent, bytes: this.audioBytesSent });
+  }
+
+  private failConnection({
+    socket,
+    closeSocket,
+    statusMessage,
+    error,
+  }: {
+    socket: WebSocket | null;
+    closeSocket: boolean;
+    statusMessage: string;
+    error: SpeechErrorState;
+  }): void {
+    if (socket && this.socket !== socket) return;
+
+    this.connecting = false;
+    this.closingForSilence = false;
+    this.clearKeepAlive();
+    this.clearFixtureTimer();
+    this.unsubscribeFromAudio();
+    this.flushAudioStats(true);
+    this.clearPreRoll();
+
+    if (socket && closeSocket) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'CloseStream' }));
+      }
+      this.socket = null;
+      socket.close();
+    } else if (socket) {
+      this.socket = null;
+    }
+
+    if (this.active) {
+      this.active = false;
+      this.callbacks.onActiveChange?.(false);
+    }
+    this.callbacks.onStatusChange?.(statusMessage);
+    this.stopOwnedAudioSource();
+    this.emitError(error);
+  }
+
+  private stopOwnedAudioSource(): void {
+    if (!this.ownsAudioSource || !this.audioSource) return;
+
+    const source = this.audioSource;
+    this.audioSource = null;
+    this.ownsAudioSource = false;
+    this.stoppingAudioSource = source.stop().finally(() => {
+      if (this.stoppingAudioSource) this.stoppingAudioSource = null;
+    });
+    void this.stoppingAudioSource;
   }
 
   private startKeepAlive(): void {

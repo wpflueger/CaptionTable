@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AudioPipeline, AudioPipelineInfo, AudioLevelListener, PcmAudioListener } from '../audio/AudioPipeline';
 import { DeepgramNovaSpeechEngine } from './DeepgramNovaSpeechEngine';
 
+const KEEPALIVE_INTERVAL_FOR_TEST = 8000;
+
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
   static OPEN = 1;
@@ -358,6 +360,67 @@ describe('DeepgramNovaSpeechEngine', () => {
     expect(activeStates.at(-1)).toBe(true);
     source.emitPcm(12);
     expect(secondSocket.sent.some((payload) => payload instanceof ArrayBuffer)).toBe(true);
+  });
+
+  it('treats Deepgram protocol errors as fatal and closes streaming', async () => {
+    const activeStates: boolean[] = [];
+    const errors: string[] = [];
+    const source = new FakeAudioPipeline();
+    const engine = new DeepgramNovaSpeechEngine({ apiKey: 'test-key' });
+    engine.setAudioSource(source, { ownsSource: true });
+    engine.setCallbacks({
+      onActiveChange: (active) => activeStates.push(active),
+      onError: (error) => errors.push(error.message),
+    });
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.onopen?.();
+
+    socket.emitMessage({ type: 'Error', description: 'bad request' });
+
+    expect(activeStates.at(-1)).toBe(false);
+    expect(errors).toContain('bad request');
+    expect(socket.sent.some((payload) => typeof payload === 'string' && payload.includes('CloseStream'))).toBe(true);
+    expect(source.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes socket and clears keepalive on WebSocket error', async () => {
+    const activeStates: boolean[] = [];
+    const errors: string[] = [];
+    const engine = new DeepgramNovaSpeechEngine({ apiKey: 'test-key' });
+    engine.setCallbacks({
+      onActiveChange: (active) => activeStates.push(active),
+      onError: (error) => errors.push(error.code),
+    });
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.onopen?.();
+    socket.onerror?.(new Event('error'));
+
+    vi.advanceTimersByTime(KEEPALIVE_INTERVAL_FOR_TEST);
+    expect(activeStates.at(-1)).toBe(false);
+    expect(errors).toContain('connectivity-loss');
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+    expect(socket.sent.some((payload) => typeof payload === 'string' && payload.includes('KeepAlive'))).toBe(false);
+  });
+
+  it('stops owned audio source on unexpected socket close', async () => {
+    const source = new FakeAudioPipeline();
+    const engine = new DeepgramNovaSpeechEngine({ apiKey: 'test-key' });
+    engine.setAudioSource(source, { ownsSource: true });
+    engine.setCallbacks({});
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.onopen?.();
+    socket.onclose?.({ code: 4000, reason: 'network down' });
+
+    expect(source.stop).toHaveBeenCalledTimes(1);
   });
 
   it('cleans up PCM nodes, socket, keepalive, and active state on stop', async () => {
