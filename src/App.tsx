@@ -1,10 +1,12 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { AudioPipeline, BrowserAudioPipeline } from './audio/AudioPipeline';
 import {
   CaptionLine,
   CaptionSession,
   CaptionSessionState,
   DeepgramNovaSpeechEngine,
 } from './speech';
+import { deepgramApiKey, e2eAudioFixtureUrl } from './appConfig';
 import { SessionGuidance, SessionLifecycle, SessionState } from './session';
 
 const initialCaptionState: CaptionSessionState = {
@@ -25,11 +27,8 @@ const languageOptions = [
   { label: 'French (France)', value: 'fr-FR' },
 ];
 
-const deepgramApiKey = import.meta.env.VITE_DEEPGRAM_API_KEY as string | undefined;
-const e2eAudioFixtureUrl = import.meta.env.DEV ? new URLSearchParams(window.location.search).get('e2eAudio') ?? undefined : undefined;
 const automaticSpeakerIdEnabled = Boolean(deepgramApiKey);
 const TRANSCRIPT_RENDER_WINDOW = 500;
-const VOLUME_METER_UPDATE_INTERVAL_MS = 100;
 
 export function App() {
   const [captionState, setCaptionState] = useState<CaptionSessionState>(initialCaptionState);
@@ -44,11 +43,16 @@ export function App() {
   const [volumePercent, setVolumePercent] = useState(0);
   const activeCaptionRef = useRef<HTMLElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
-  const stopVolumeMeterRef = useRef<(() => void) | null>(null);
-  const lastVolumeMeterUpdateRef = useRef(0);
+  const stopAudioPipelineRef = useRef<(() => Promise<void>) | null>(null);
 
   const speechEngine = useMemo(
-    () => new DeepgramNovaSpeechEngine({ apiKey: deepgramApiKey ?? '', language, model: 'nova-3', audioFixtureUrl: e2eAudioFixtureUrl }),
+    () => new DeepgramNovaSpeechEngine({
+      apiKey: deepgramApiKey ?? '',
+      language,
+      model: 'nova-3',
+      audioFixtureUrl: e2eAudioFixtureUrl,
+      silenceGate: { enabled: !e2eAudioFixtureUrl, speechThreshold: 0.025, silenceTimeoutMs: 60_000, minConnectionMs: 10_000 },
+    }),
     [],
   );
   const captionSession = useMemo(() => new CaptionSession(speechEngine), [speechEngine]);
@@ -71,7 +75,8 @@ export function App() {
 
   useEffect(
     () => () => {
-      stopVolumeMeterRef.current?.();
+      void stopAudioPipelineRef.current?.();
+      speechEngine.setAudioSource(null);
       speechEngine.setMediaStream(null);
       captionSession.stop();
       void lifecycle.stop();
@@ -99,82 +104,50 @@ export function App() {
 
     if (e2eAudioFixtureUrl) {
       setMicrophoneStatus('Using E2E audio fixture');
+      speechEngine.setAudioSource(null);
       speechEngine.setMediaStream(null);
       captionSession.start();
       return;
     }
 
-    const stream = await startVolumeMeter();
-    if (!stream) {
+    const audioPipeline = await startAudioPipeline();
+    if (!audioPipeline) {
       void lifecycle.stop();
       return;
     }
 
-    speechEngine.setMediaStream(stream, { ownsStream: false });
+    speechEngine.setAudioSource(audioPipeline, { ownsSource: false });
     captionSession.start();
   }
 
   async function stopCaptions() {
-    stopVolumeMeterRef.current?.();
-    stopVolumeMeterRef.current = null;
+    await stopAudioPipelineRef.current?.();
+    stopAudioPipelineRef.current = null;
     setVolumePercent(0);
     setMicrophoneStatus('Stopped');
+    speechEngine.setAudioSource(null);
     speechEngine.setMediaStream(null);
     captionSession.stop();
     await lifecycle.stop();
   }
 
-  async function startVolumeMeter(): Promise<MediaStream | null> {
-    stopVolumeMeterRef.current?.();
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setMicrophoneStatus('Microphone capture is not available in this browser.');
-      return null;
-    }
+  async function startAudioPipeline(): Promise<AudioPipeline | null> {
+    await stopAudioPipelineRef.current?.();
+    stopAudioPipelineRef.current = null;
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const AudioContextCtor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!AudioContextCtor) {
-        setMicrophoneStatus('Microphone allowed; audio meter is unavailable.');
-        stopVolumeMeterRef.current = () => stream.getTracks().forEach((track) => track.stop());
-        return stream;
-      }
-
-      const audioContext = new AudioContextCtor();
-      const analyser = audioContext.createAnalyser();
-      const source = audioContext.createMediaStreamSource(stream);
-      const samples = new Uint8Array(analyser.fftSize);
-      let animationFrame = 0;
-
-      source.connect(analyser);
-      setMicrophoneStatus('Microphone active');
-
-      const tick = () => {
-        analyser.getByteTimeDomainData(samples);
-        let total = 0;
-        samples.forEach((sample) => {
-          const centered = (sample - 128) / 128;
-          total += centered * centered;
-        });
-        const rms = Math.sqrt(total / samples.length);
-        const now = Date.now();
-        if (now - lastVolumeMeterUpdateRef.current >= VOLUME_METER_UPDATE_INTERVAL_MS) {
-          lastVolumeMeterUpdateRef.current = now;
-          lifecycle.reportInputVolume(rms);
-          setVolumePercent(Math.min(100, Math.round(rms * 320)));
-        }
-        animationFrame = requestAnimationFrame(tick);
+      const pipeline = new BrowserAudioPipeline();
+      const unsubscribeLevel = pipeline.subscribeLevel((level) => {
+        lifecycle.reportInputVolume(level);
+        setVolumePercent(Math.min(100, Math.round(level * 320)));
+      });
+      const info = await pipeline.start();
+      setMicrophoneStatus(`Microphone active (${info.worklet ? 'AudioWorklet' : 'ScriptProcessor fallback'})`);
+      stopAudioPipelineRef.current = async () => {
+        unsubscribeLevel();
+        await pipeline.stop();
       };
-
-      tick();
-      stopVolumeMeterRef.current = () => {
-        cancelAnimationFrame(animationFrame);
-        source.disconnect();
-        stream.getTracks().forEach((track) => track.stop());
-        void audioContext.close();
-      };
-      return stream;
+      return pipeline;
     } catch (error) {
       setMicrophoneStatus('Microphone access was blocked or failed.');
       setGuidance('I can’t hear anyone.');

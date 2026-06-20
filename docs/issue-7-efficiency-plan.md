@@ -24,6 +24,21 @@ Make CaptionTable viable for long-running, set-and-forget conversations by reduc
 6. Transcript rendering is unbounded and can become expensive over long sessions.
 7. The dev-only E2E fixture path lives in the main app component.
 
+## Implementation status
+
+This PR implements the issue #7 plan end-to-end:
+
+- [x] Baseline E2E metrics remain reported by `npm run test:e2e:deepgram-ui`.
+- [x] Audio diagnostics are throttled and final stats flush on close/stop.
+- [x] Caption-only subscribers are split from diagnostics/session-state subscribers.
+- [x] Media stream/audio source ownership is explicit.
+- [x] Mic meter and Deepgram sender share a single `AudioPipeline`.
+- [x] Local VAD/silence gating waits for speech, pauses Deepgram after sustained silence, and reconnects on resumed speech.
+- [x] `AudioWorkletNode` is the primary live microphone processing path, with `ScriptProcessorNode` kept only as a fallback.
+- [x] Transcript rendering is windowed to the latest 500 turns while retaining full session transcript state.
+- [x] Dev-only E2E fixture query parsing moved out of `App.tsx` into `src/appConfig.ts`.
+- [x] `npm test`, `npm run build`, `npm run test:deepgram:ami`, and `npm run test:e2e:deepgram-ui` pass after implementation.
+
 ## Guiding principles
 
 - Preserve current passing behavior before optimizing.
@@ -260,16 +275,18 @@ The dev-only `?e2eAudio=` fixture wiring is guarded by `import.meta.env.DEV`, bu
 - E2E remains deterministic.
 - Production bundle is unaffected.
 
-## Recommended PR breakdown
+## Implemented PR breakdown
 
-1. **PR 1:** Baseline metrics + diagnostics throttling.
-2. **PR 2:** Split diagnostics vs transcript subscriptions.
-3. **PR 3:** Stream ownership cleanup.
-4. **PR 4:** Shared audio pipeline.
-5. **PR 5:** Silence/VAD gating.
-6. **PR 6:** AudioWorklet migration.
-7. **PR 7:** Transcript virtualization.
-8. **PR 8:** Move E2E fixture wiring out of main app.
+The original recommended breakdown was collapsed into this PR at the user's request to keep implementing until all items were complete:
+
+1. **Done:** Baseline metrics + diagnostics throttling.
+2. **Done:** Split diagnostics vs transcript subscriptions.
+3. **Done:** Stream ownership cleanup.
+4. **Done:** Shared audio pipeline.
+5. **Done:** Silence/VAD gating.
+6. **Done:** AudioWorklet migration with fallback.
+7. **Done:** Transcript rendering window.
+8. **Done:** Move E2E fixture wiring out of main app.
 
 ## Required test matrix for each implementation PR
 
@@ -290,21 +307,21 @@ For phases that alter live audio behavior, also perform a manual Chrome mic smok
 - at least one transcript turn
 - at least two speakers when using multi-speaker fixture
 
-## Risks
+## Remaining risks / known tradeoffs
 
-- VAD reconnects may reset Deepgram speaker numbering.
-- AudioWorklet implementation may introduce browser compatibility complexity.
-- Shared audio pipeline refactor can destabilize currently passing E2E if done too broadly.
-- Reducing audio sent to Deepgram too aggressively can clip first words after silence.
+- VAD reconnects may reset Deepgram speaker numbering after long idle periods.
+- The app may clip the first word after a long idle pause if speech begins before the Deepgram reconnect is ready.
+- `ScriptProcessorNode` remains as an explicit fallback for browsers where `AudioWorkletNode` setup fails.
+- Physical microphone behavior still depends on browser/OS/hardware permissions and selected input device.
 
 ## Success definition
 
 Issue #7 can be closed when:
 
-- diagnostics updates are throttled
-- duplicate audio graph is removed
-- stream ownership is explicit
-- long silence no longer keeps Deepgram streaming indefinitely
-- audio processing no longer relies primarily on deprecated `ScriptProcessorNode`
-- transcript rendering scales to long sessions
-- real Deepgram UI E2E still passes
+- [x] diagnostics updates are throttled
+- [x] duplicate audio graph is removed
+- [x] stream ownership is explicit
+- [x] long silence no longer keeps Deepgram streaming indefinitely
+- [x] audio processing no longer relies primarily on deprecated `ScriptProcessorNode`
+- [x] transcript rendering scales to long sessions
+- [x] real Deepgram UI E2E still passes

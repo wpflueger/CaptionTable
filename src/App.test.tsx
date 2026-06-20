@@ -23,6 +23,7 @@ vi.mock('./speech', async (importOriginal) => {
     }
     setLanguage(): void {}
     setMediaStream = vi.fn();
+    setAudioSource = vi.fn();
     setCallbacks(callbacks: actual.SpeechEngineCallbacks): void {
       hoisted.callbacks = callbacks;
       callbacks.onAvailabilityChange?.({ available: true });
@@ -65,14 +66,18 @@ function installBrowserFakes() {
   });
 
   class FakeAudioContext {
-    createAnalyser() {
-      return {
-        fftSize: 32,
-        getByteTimeDomainData: (samples: Uint8Array) => samples.fill(128),
-      };
-    }
+    sampleRate = 16000;
+    state: AudioContextState = 'running';
+    destination = {} as AudioDestinationNode;
+    resume = vi.fn(async () => undefined);
     createMediaStreamSource() {
       return { connect: vi.fn(), disconnect: vi.fn() };
+    }
+    createGain() {
+      return { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() };
+    }
+    createScriptProcessor() {
+      return { onaudioprocess: null, connect: vi.fn(), disconnect: vi.fn() };
     }
     close = vi.fn(async () => undefined);
   }
@@ -133,5 +138,24 @@ describe('App', () => {
 
     await waitFor(() => expect(screen.getAllByText('answer from speaker two')).toHaveLength(2));
     expect(screen.getAllByText('Person 2')).toHaveLength(2);
+  });
+
+  it('windows long transcript rendering to the latest 500 turns', async () => {
+    vi.stubEnv('VITE_DEEPGRAM_API_KEY', 'test-key');
+    const { App } = await import('./App');
+    render(<App />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start Captions' }));
+    expect(await screen.findByText('Full speaker transcript')).toBeInTheDocument();
+
+    act(() => {
+      for (let index = 1; index <= 550; index += 1) {
+        hoisted.callbacks?.onFinalText?.(`caption ${index}`, 'Person 1');
+      }
+    });
+
+    expect(await screen.findByText('Showing latest 500 of 550 transcript turns.')).toBeInTheDocument();
+    expect(screen.queryByText('caption 1')).not.toBeInTheDocument();
+    expect(screen.getAllByText('caption 550')).toHaveLength(2);
   });
 });

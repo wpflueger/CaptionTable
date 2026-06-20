@@ -32,6 +32,7 @@ Verifies:
 - speaker labels from the speech engine are preserved
 - multiple speakers can appear in the transcript
 - transcript state clears on stop
+- diagnostics-only audio stats do not notify caption-only subscribers
 
 ### `DeepgramNovaSpeechEngine`
 
@@ -47,10 +48,13 @@ Verifies:
   - `sample_rate=...`
 - token auth protocol is sent
 - Web Audio PCM buffers are sent through the WebSocket
-- audio send stats increment
+- audio send stats increment and are throttled
 - Deepgram `speaker` IDs map to `Person N`
 - multi-speaker Deepgram word results are split into separate transcript turns
 - shared media stream avoids a second `getUserMedia` call
+- provided streams are only stopped when ownership is explicit
+- local VAD/silence gating waits for speech before connecting Deepgram
+- sustained silence closes Deepgram and resumed speech reconnects
 - stop cleans up PCM nodes, keepalive, socket, and active state
 
 ### `App`
@@ -66,6 +70,7 @@ Verifies:
 - full speaker transcript panel appears
 - old `Recent finalized captions` panel does not appear
 - automatic speaker labels appear in the active caption and transcript
+- long transcript rendering is windowed to the latest 500 turns
 
 ## Build test
 
@@ -147,7 +152,7 @@ The E2E path uses a dev-only query parameter:
 ?e2eAudio=/__e2e-ami.wav
 ```
 
-That parameter is only wired in development mode via `import.meta.env.DEV`; it is not intended for production.
+That parameter is only wired in development mode through `src/appConfig.ts` via `import.meta.env.DEV`; the main `App.tsx` component no longer parses the fixture query parameter directly. It is not intended for production.
 
 Example passing result:
 
@@ -190,6 +195,9 @@ The UI diagnostics exist to troubleshoot physical microphone sessions:
 - audio chunks sent
 - bytes sent
 - Deepgram status
+- local VAD waiting/paused/connecting state
+
+Physical mic sessions now use local silence gating. Deepgram does not connect until speech crosses the local threshold, closes after sustained silence, and reconnects when speech resumes. This reduces idle streaming but can reset Deepgram speaker numbering across long idle reconnects.
 
 ## Security note for tests
 
