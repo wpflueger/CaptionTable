@@ -7,6 +7,8 @@ const hoisted = vi.hoisted(() => ({
   callbacks: undefined as import('./speech').SpeechEngineCallbacks | undefined,
   active: false,
   micStop: vi.fn(),
+  lifecycleStops: 0,
+  audioCloseReject: false,
 }));
 
 vi.mock('./speech', async (importOriginal) => {
@@ -49,6 +51,7 @@ vi.mock('./session', async (importOriginal) => {
       this.options.onWakeLockChange?.(true);
     }
     async stop(): Promise<void> {
+      hoisted.lifecycleStops += 1;
       this.options.onWakeLockChange?.(false);
       this.options.onStateChange?.('stopped');
       this.options.onGuidance?.('Captions stopped.');
@@ -80,7 +83,12 @@ function installBrowserFakes() {
     createScriptProcessor() {
       return { onaudioprocess: null, connect: vi.fn(), disconnect: vi.fn() };
     }
-    close = vi.fn(async () => undefined);
+    close = vi.fn(async () => {
+      if (hoisted.audioCloseReject) {
+        throw new Error('audio close failed');
+      }
+      return undefined;
+    });
   }
 
   vi.stubGlobal('AudioContext', FakeAudioContext);
@@ -96,6 +104,8 @@ describe('App', () => {
     hoisted.callbacks = undefined;
     hoisted.active = false;
     hoisted.micStop = vi.fn();
+    hoisted.lifecycleStops = 0;
+    hoisted.audioCloseReject = false;
     installBrowserFakes();
   });
 
@@ -178,5 +188,21 @@ describe('App', () => {
     });
 
     await waitFor(() => expect(hoisted.micStop).toHaveBeenCalled());
+  });
+
+  it('still stops lifecycle when local audio cleanup rejects', async () => {
+    vi.stubEnv('VITE_DEEPGRAM_API_KEY', 'test-key');
+    hoisted.audioCloseReject = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { App } = await import('./App');
+    render(<App />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start Captions' }));
+    expect(await screen.findByText('Full speaker transcript')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
+
+    await waitFor(() => expect(hoisted.lifecycleStops).toBeGreaterThan(0));
+    expect(warn).toHaveBeenCalledWith('Audio pipeline cleanup failed.', expect.any(Error));
+    warn.mockRestore();
   });
 });

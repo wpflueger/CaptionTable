@@ -170,16 +170,7 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     this.closingForSilence = false;
     this.pausedForSilence = false;
 
-    if (this.ownsAudioSource && this.audioSource) {
-      const source = this.audioSource;
-      this.audioSource = null;
-      this.ownsAudioSource = false;
-      this.stoppingAudioSource = source.stop().finally(() => {
-        if (this.stoppingAudioSource) this.stoppingAudioSource = null;
-      });
-      void this.stoppingAudioSource;
-    }
-
+    this.stopOwnedAudioSource();
     this.clearPreRoll();
   }
 
@@ -617,9 +608,14 @@ export class DeepgramNovaSpeechEngine implements SpeechEngine {
     const source = this.audioSource;
     this.audioSource = null;
     this.ownsAudioSource = false;
-    this.stoppingAudioSource = source.stop().finally(() => {
-      if (this.stoppingAudioSource) this.stoppingAudioSource = null;
-    });
+    this.stoppingAudioSource = source
+      .stop()
+      .catch((error) => {
+        console.warn('Audio source cleanup failed.', error);
+      })
+      .finally(() => {
+        if (this.stoppingAudioSource) this.stoppingAudioSource = null;
+      });
     void this.stoppingAudioSource;
   }
 

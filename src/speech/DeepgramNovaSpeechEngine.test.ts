@@ -423,6 +423,22 @@ describe('DeepgramNovaSpeechEngine', () => {
     expect(source.stop).toHaveBeenCalledTimes(1);
   });
 
+  it('swallows owned audio source cleanup rejection and logs it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const source = new FakeAudioPipeline();
+    source.stop.mockRejectedValueOnce(new Error('cleanup failed'));
+    const engine = new DeepgramNovaSpeechEngine({ apiKey: 'test-key' });
+    engine.setAudioSource(source, { ownsSource: true });
+    engine.setCallbacks({});
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    FakeWebSocket.instances[0].onclose?.({ code: 4000, reason: 'network down' });
+
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledWith('Audio source cleanup failed.', expect.any(Error)));
+    warn.mockRestore();
+  });
+
   it('cleans up PCM nodes, socket, keepalive, and active state on stop', async () => {
     const activeStates: boolean[] = [];
     const engine = new DeepgramNovaSpeechEngine({ apiKey: 'test-key' });

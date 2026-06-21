@@ -138,22 +138,35 @@ export function App() {
 
   async function stopCaptions() {
     captionSession.stop();
-    await stopLocalAudio('Stopped');
-    await lifecycle.stop();
+    try {
+      await stopLocalAudio('Stopped');
+    } finally {
+      await lifecycle.stop();
+    }
   }
 
   async function stopLocalAudio(status: string): Promise<void> {
-    await stopAudioPipelineRef.current?.();
+    const stopAudio = stopAudioPipelineRef.current;
     stopAudioPipelineRef.current = null;
-    setVolumePercent(0);
-    setMicrophoneStatus(status);
     speechEngine.setAudioSource(null);
     speechEngine.setMediaStream(null);
+
+    try {
+      await stopAudio?.();
+    } catch (error) {
+      console.warn('Audio pipeline cleanup failed.', error);
+    } finally {
+      setVolumePercent(0);
+      setMicrophoneStatus(status);
+    }
   }
 
   async function stopLocalAudioAfterEngineFailure(): Promise<void> {
-    await stopLocalAudio('Stopped after Deepgram connection failure.');
-    await lifecycle.stop();
+    try {
+      await stopLocalAudio('Stopped after Deepgram connection failure.');
+    } finally {
+      await lifecycle.stop();
+    }
   }
 
   async function startAudioPipeline(): Promise<AudioPipeline | null> {
