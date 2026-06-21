@@ -6,11 +6,15 @@ The current app is **Deepgram Nova only** for transcription and automatic speake
 
 ## Current behavior
 
-- Captures microphone audio in the browser.
-- Streams audio to Deepgram Nova over WebSocket.
+- Captures microphone audio in the browser with a single shared Web Audio pipeline.
+- Uses `AudioWorkletNode` for PCM conversion/chunking when available, with a `ScriptProcessorNode` fallback for incompatible browsers.
+- Keeps local mic-level monitoring active while the session is running.
+- Opens the Deepgram Nova WebSocket when local speech is detected.
+- Keeps a short local PCM pre-roll buffer so the beginning of speech can be sent when Deepgram finishes reconnecting.
+- Closes the Deepgram stream after sustained silence and reconnects when speech resumes.
 - Requests automatic speaker diarization with `diarize=true`.
 - Displays the current live caption in a large high-visibility panel.
-- Displays a full scrollable transcript of speaker-labeled turns.
+- Displays a full speaker-labeled transcript with a long-session history control to load earlier turns instead of silently dropping older transcript cards.
 - Labels speakers as Deepgram returns them, e.g. `Person 1`, `Person 2`.
 - Disables Start if `VITE_DEEPGRAM_API_KEY` is missing.
 
@@ -63,15 +67,28 @@ npm run preview
   - Start screen
   - Deepgram readiness state
   - active caption screen
-  - full speaker transcript panel
-  - microphone status and Deepgram diagnostics
+  - memoized Deepgram diagnostics
+  - windowed full speaker transcript panel
+  - microphone status
+- `src/appConfig.ts`
+  - environment-derived app config
+  - dev-only E2E audio fixture query parsing
 
-### Speech/session layer
+### Audio/speech/session layer
 
+- `src/audio/AudioPipeline.ts`
+  - single shared browser microphone pipeline
+  - one `MediaStream` and one `AudioContext` per active mic session
+  - mic-level subscriptions for UI/lifecycle/VAD
+  - PCM subscriptions for Deepgram streaming
+  - `AudioWorkletNode` primary processing path with `ScriptProcessorNode` fallback
+- `src/audio/pcmWorklet.js`
+  - AudioWorklet processor for level metering and 16-bit PCM chunking
 - `src/speech/DeepgramNovaSpeechEngine.ts`
   - Deepgram Nova WebSocket connection
   - `diarize=true`
-  - Web Audio PCM streaming path
+  - shared audio pipeline PCM streaming path
+  - local VAD/silence gating for Deepgram connect/pause/reconnect
   - dev-only E2E WAV fixture streaming path
   - Deepgram result parsing
   - speaker turn splitting by consecutive Deepgram `word.speaker` values
@@ -126,11 +143,15 @@ Useful states:
 
 | UI status | Meaning |
 |---|---|
+| `Waiting for speech before connecting to Deepgram…` | local mic pipeline is active; Deepgram is not connected yet |
+| `Speech detected; connecting to Deepgram…` | local VAD detected speech and is opening the WebSocket |
 | `Connected to Deepgram...` | WebSocket opened successfully |
 | `Audio is streaming to Deepgram...` | Audio bytes are being sent |
+| `Paused Deepgram after sustained silence...` | local mic stays active, but Deepgram has been closed to avoid streaming silence |
+| `Reconnected to Deepgram after silence. Speaker labels may restart.` | Deepgram reconnected after idle; diarization labels may reset across the segment boundary |
 | `Live transcript received.` | Deepgram sent interim transcript text |
 | `Final transcript received.` | Deepgram sent finalized transcript text |
-| `Audio sent: 0 chunks / 0 KB` | browser audio path has not sent audio yet |
+| `Audio sent: 0 chunks / 0 KB` | local speech has not triggered Deepgram audio streaming yet, or the browser audio path is not producing audio |
 
 ## Troubleshooting
 
@@ -167,8 +188,10 @@ Then hard refresh.
 
 Check the diagnostics:
 
+- If status says `Waiting for speech before connecting to Deepgram…`, the local mic pipeline is active but local VAD has not detected speech above threshold yet.
+- If status says `Paused Deepgram after sustained silence...`, speak again to reconnect Deepgram.
 - If `Audio sent` is increasing, the browser is sending audio to Deepgram.
-- If `Audio sent` remains `0`, the browser is not producing audio for the app.
+- If `Audio sent` remains `0` even while speaking, the browser may not be producing enough audio level for VAD or PCM streaming.
 - If `Audio sent` increases but no transcript appears, Deepgram may not be detecting speech or may be returning an error.
 
 Also check:
@@ -191,6 +214,12 @@ Production build check:
 
 ```bash
 npm run build
+```
+
+Browser-level live audio pipeline/AudioWorklet proof:
+
+```bash
+npm run test:e2e:audio-pipeline
 ```
 
 Real Deepgram prerecorded AMI diarization check:

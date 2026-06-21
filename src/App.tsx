@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { AudioPipeline, BrowserAudioPipeline } from './audio/AudioPipeline';
 import {
   CaptionLine,
   CaptionSession,
   CaptionSessionState,
   DeepgramNovaSpeechEngine,
 } from './speech';
+import { deepgramApiKey, e2eAudioFixtureUrl } from './appConfig';
 import { SessionGuidance, SessionLifecycle, SessionState } from './session';
 
 const initialCaptionState: CaptionSessionState = {
@@ -25,12 +27,16 @@ const languageOptions = [
   { label: 'French (France)', value: 'fr-FR' },
 ];
 
-const deepgramApiKey = import.meta.env.VITE_DEEPGRAM_API_KEY as string | undefined;
-const e2eAudioFixtureUrl = import.meta.env.DEV ? new URLSearchParams(window.location.search).get('e2eAudio') ?? undefined : undefined;
 const automaticSpeakerIdEnabled = Boolean(deepgramApiKey);
+const TRANSCRIPT_RENDER_WINDOW = 500;
+const LIVE_SPEECH_THRESHOLD = 0.025;
+const LIVE_SILENCE_TIMEOUT_MS = 60_000;
+const LIVE_MIN_DEEPGRAM_CONNECTION_MS = 10_000;
+const LIVE_PRE_ROLL_MS = 1500;
 
 export function App() {
   const [captionState, setCaptionState] = useState<CaptionSessionState>(initialCaptionState);
+  const [captions, setCaptions] = useState<CaptionLine[]>([]);
   const [sessionState, setSessionState] = useState<SessionState>('idle');
   const [guidance, setGuidance] = useState<SessionGuidance | null>(null);
   const [wakeLocked, setWakeLocked] = useState(false);
@@ -41,10 +47,22 @@ export function App() {
   const [volumePercent, setVolumePercent] = useState(0);
   const activeCaptionRef = useRef<HTMLElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
-  const stopVolumeMeterRef = useRef<(() => void) | null>(null);
+  const stopAudioPipelineRef = useRef<(() => Promise<void>) | null>(null);
 
   const speechEngine = useMemo(
-    () => new DeepgramNovaSpeechEngine({ apiKey: deepgramApiKey ?? '', language, model: 'nova-3', audioFixtureUrl: e2eAudioFixtureUrl }),
+    () => new DeepgramNovaSpeechEngine({
+      apiKey: deepgramApiKey ?? '',
+      language,
+      model: 'nova-3',
+      audioFixtureUrl: e2eAudioFixtureUrl,
+      silenceGate: {
+        enabled: !e2eAudioFixtureUrl,
+        speechThreshold: LIVE_SPEECH_THRESHOLD,
+        silenceTimeoutMs: LIVE_SILENCE_TIMEOUT_MS,
+        minConnectionMs: LIVE_MIN_DEEPGRAM_CONNECTION_MS,
+        preRollMs: LIVE_PRE_ROLL_MS,
+      },
+    }),
     [],
   );
   const captionSession = useMemo(() => new CaptionSession(speechEngine), [speechEngine]);
@@ -59,6 +77,7 @@ export function App() {
   );
 
   useEffect(() => captionSession.subscribe(setCaptionState), [captionSession]);
+  useEffect(() => captionSession.subscribeCaptions(setCaptions), [captionSession]);
 
   useEffect(() => {
     captionSession.setLanguage(language);
@@ -66,7 +85,8 @@ export function App() {
 
   useEffect(
     () => () => {
-      stopVolumeMeterRef.current?.();
+      void stopAudioPipelineRef.current?.();
+      speechEngine.setAudioSource(null);
       speechEngine.setMediaStream(null);
       captionSession.stop();
       void lifecycle.stop();
@@ -76,10 +96,16 @@ export function App() {
 
   useEffect(() => {
     scrollTranscriptToBottom(transcriptRef.current);
-  }, [captionState.captions]);
+  }, [captions]);
 
-  const latestCaption = captionState.captions.at(-1) ?? null;
-  const transcriptCaptions = captionState.captions;
+  useEffect(() => {
+    if (!captionState.active && captionState.error && stopAudioPipelineRef.current) {
+      void stopLocalAudioAfterEngineFailure();
+    }
+  }, [captionState.active, captionState.error]);
+
+  const latestCaption = captions.at(-1) ?? null;
+  const transcriptCaptions = captions;
   const selectedLanguageLabel = languageOptions.find((option) => option.value === language)?.label ?? language;
 
   async function startCaptions() {
@@ -94,78 +120,72 @@ export function App() {
 
     if (e2eAudioFixtureUrl) {
       setMicrophoneStatus('Using E2E audio fixture');
+      speechEngine.setAudioSource(null);
       speechEngine.setMediaStream(null);
       captionSession.start();
       return;
     }
 
-    const stream = await startVolumeMeter();
-    if (!stream) {
+    const audioPipeline = await startAudioPipeline();
+    if (!audioPipeline) {
       void lifecycle.stop();
       return;
     }
 
-    speechEngine.setMediaStream(stream);
+    speechEngine.setAudioSource(audioPipeline, { ownsSource: false });
     captionSession.start();
   }
 
   async function stopCaptions() {
-    stopVolumeMeterRef.current?.();
-    stopVolumeMeterRef.current = null;
-    setVolumePercent(0);
-    setMicrophoneStatus('Stopped');
-    speechEngine.setMediaStream(null);
     captionSession.stop();
-    await lifecycle.stop();
+    try {
+      await stopLocalAudio('Stopped');
+    } finally {
+      await lifecycle.stop();
+    }
   }
 
-  async function startVolumeMeter(): Promise<MediaStream | null> {
-    stopVolumeMeterRef.current?.();
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setMicrophoneStatus('Microphone capture is not available in this browser.');
-      return null;
-    }
+  async function stopLocalAudio(status: string): Promise<void> {
+    const stopAudio = stopAudioPipelineRef.current;
+    stopAudioPipelineRef.current = null;
+    speechEngine.setAudioSource(null);
+    speechEngine.setMediaStream(null);
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const AudioContextCtor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!AudioContextCtor) {
-        setMicrophoneStatus('Microphone allowed; audio meter is unavailable.');
-        stopVolumeMeterRef.current = () => stream.getTracks().forEach((track) => track.stop());
-        return stream;
-      }
+      await stopAudio?.();
+    } catch (error) {
+      console.warn('Audio pipeline cleanup failed.', error);
+    } finally {
+      setVolumePercent(0);
+      setMicrophoneStatus(status);
+    }
+  }
 
-      const audioContext = new AudioContextCtor();
-      const analyser = audioContext.createAnalyser();
-      const source = audioContext.createMediaStreamSource(stream);
-      const samples = new Uint8Array(analyser.fftSize);
-      let animationFrame = 0;
+  async function stopLocalAudioAfterEngineFailure(): Promise<void> {
+    try {
+      await stopLocalAudio('Stopped after Deepgram connection failure.');
+    } finally {
+      await lifecycle.stop();
+    }
+  }
 
-      source.connect(analyser);
-      setMicrophoneStatus('Microphone active');
+  async function startAudioPipeline(): Promise<AudioPipeline | null> {
+    await stopAudioPipelineRef.current?.();
+    stopAudioPipelineRef.current = null;
 
-      const tick = () => {
-        analyser.getByteTimeDomainData(samples);
-        let total = 0;
-        samples.forEach((sample) => {
-          const centered = (sample - 128) / 128;
-          total += centered * centered;
-        });
-        const rms = Math.sqrt(total / samples.length);
-        lifecycle.reportInputVolume(rms);
-        setVolumePercent(Math.min(100, Math.round(rms * 320)));
-        animationFrame = requestAnimationFrame(tick);
+    try {
+      const pipeline = new BrowserAudioPipeline();
+      const unsubscribeLevel = pipeline.subscribeLevel((level) => {
+        lifecycle.reportInputVolume(level);
+        setVolumePercent(Math.min(100, Math.round(level * 320)));
+      });
+      const info = await pipeline.start();
+      setMicrophoneStatus(`Microphone active (${info.worklet ? 'AudioWorklet' : 'ScriptProcessor fallback'})`);
+      stopAudioPipelineRef.current = async () => {
+        unsubscribeLevel();
+        await pipeline.stop();
       };
-
-      tick();
-      stopVolumeMeterRef.current = () => {
-        cancelAnimationFrame(animationFrame);
-        source.disconnect();
-        stream.getTracks().forEach((track) => track.stop());
-        void audioContext.close();
-      };
-      return stream;
+      return pipeline;
     } catch (error) {
       setMicrophoneStatus('Microphone access was blocked or failed.');
       setGuidance('I can’t hear anyone.');
@@ -246,12 +266,12 @@ export function App() {
             {latestCaption && !latestCaption.finalized ? <span className="interim-badge">Interim</span> : null}
           </article>
 
-          <section className="deepgram-diagnostics" aria-live="polite" aria-atomic="true">
-            <strong>Deepgram status</strong>
-            <span>{captionState.statusMessage ?? 'Starting Deepgram…'}</span>
-            <span>Mic level: {volumePercent}%</span>
-            <span>Audio sent: {captionState.audioChunksSent} chunks / {Math.round(captionState.audioBytesSent / 1024)} KB</span>
-          </section>
+          <DeepgramDiagnostics
+            statusMessage={captionState.statusMessage}
+            volumePercent={volumePercent}
+            audioChunksSent={captionState.audioChunksSent}
+            audioBytesSent={captionState.audioBytesSent}
+          />
 
           <section className="caption-tools" aria-label="Caption controls">
             <label>
@@ -280,16 +300,7 @@ export function App() {
             {captionState.error ? <Notice tone="error">{captionState.error.message}</Notice> : null}
           </section>
 
-          <section className="turns-panel transcript-panel" aria-labelledby="transcript-heading">
-            <h2 id="transcript-heading">Full speaker transcript</h2>
-            <div className="turn-list transcript-list" ref={transcriptRef}>
-              {transcriptCaptions.length ? (
-                transcriptCaptions.map((caption) => <CaptionCard caption={caption} key={caption.id} />)
-              ) : (
-                <p className="empty-state">No captions yet. Start speaking and the transcript will appear here.</p>
-              )}
-            </div>
-          </section>
+          <TranscriptPanel captions={transcriptCaptions} transcriptRef={transcriptRef} />
         </section>
       )}
     </main>
@@ -342,7 +353,71 @@ function StatusCard({ label, value, tone }: { label: string; value: string; tone
   );
 }
 
-function CaptionCard({ caption }: { caption: CaptionLine }) {
+const DeepgramDiagnostics = memo(function DeepgramDiagnostics({
+  statusMessage,
+  volumePercent,
+  audioChunksSent,
+  audioBytesSent,
+}: {
+  statusMessage: string | null;
+  volumePercent: number;
+  audioChunksSent: number;
+  audioBytesSent: number;
+}) {
+  return (
+    <section className="deepgram-diagnostics" aria-live="polite" aria-atomic="true">
+      <strong>Deepgram status</strong>
+      <span>{statusMessage ?? 'Starting Deepgram…'}</span>
+      <span>Mic level: {volumePercent}%</span>
+      <span>Audio sent: {audioChunksSent} chunks / {Math.round(audioBytesSent / 1024)} KB</span>
+    </section>
+  );
+});
+
+const TranscriptPanel = memo(function TranscriptPanel({
+  captions,
+  transcriptRef,
+}: {
+  captions: CaptionLine[];
+  transcriptRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const [visibleCount, setVisibleCount] = useState(TRANSCRIPT_RENDER_WINDOW);
+  const hiddenCount = Math.max(0, captions.length - visibleCount);
+  const renderedCaptions = hiddenCount ? captions.slice(-visibleCount) : captions;
+
+  useEffect(() => {
+    if (captions.length <= TRANSCRIPT_RENDER_WINDOW && visibleCount !== TRANSCRIPT_RENDER_WINDOW) {
+      setVisibleCount(TRANSCRIPT_RENDER_WINDOW);
+    }
+  }, [captions.length, visibleCount]);
+
+  return (
+    <section className="turns-panel transcript-panel" aria-labelledby="transcript-heading">
+      <h2 id="transcript-heading">Full speaker transcript</h2>
+      {hiddenCount ? (
+        <div className="transcript-history-controls">
+          <p className="transcript-window-note">Showing latest {renderedCaptions.length} of {captions.length} transcript turns.</p>
+          <button
+            className="secondary-action"
+            type="button"
+            onClick={() => setVisibleCount((count) => Math.min(captions.length, count + TRANSCRIPT_RENDER_WINDOW))}
+          >
+            Load earlier turns
+          </button>
+        </div>
+      ) : null}
+      <div className="turn-list transcript-list" ref={transcriptRef}>
+        {renderedCaptions.length ? (
+          renderedCaptions.map((caption) => <CaptionCard caption={caption} key={caption.id} />)
+        ) : (
+          <p className="empty-state">No captions yet. Start speaking and the transcript will appear here.</p>
+        )}
+      </div>
+    </section>
+  );
+});
+
+const CaptionCard = memo(function CaptionCard({ caption }: { caption: CaptionLine }) {
   return (
     <article className="turn-card" data-finalized={caption.finalized}>
       <div>
@@ -352,7 +427,7 @@ function CaptionCard({ caption }: { caption: CaptionLine }) {
       <p>{caption.text}</p>
     </article>
   );
-}
+});
 
 function getSpeakerLabel(caption: CaptionLine | null): string {
   return caption?.speakerLabel || 'Identifying speaker';

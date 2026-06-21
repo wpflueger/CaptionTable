@@ -6,6 +6,9 @@ const hoisted = vi.hoisted(() => ({
   deepgramKey: 'test-key',
   callbacks: undefined as import('./speech').SpeechEngineCallbacks | undefined,
   active: false,
+  micStop: vi.fn(),
+  lifecycleStops: 0,
+  audioCloseReject: false,
 }));
 
 vi.mock('./speech', async (importOriginal) => {
@@ -23,6 +26,7 @@ vi.mock('./speech', async (importOriginal) => {
     }
     setLanguage(): void {}
     setMediaStream = vi.fn();
+    setAudioSource = vi.fn();
     setCallbacks(callbacks: actual.SpeechEngineCallbacks): void {
       hoisted.callbacks = callbacks;
       callbacks.onAvailabilityChange?.({ available: true });
@@ -47,6 +51,7 @@ vi.mock('./session', async (importOriginal) => {
       this.options.onWakeLockChange?.(true);
     }
     async stop(): Promise<void> {
+      hoisted.lifecycleStops += 1;
       this.options.onWakeLockChange?.(false);
       this.options.onStateChange?.('stopped');
       this.options.onGuidance?.('Captions stopped.');
@@ -60,21 +65,30 @@ function installBrowserFakes() {
   Object.defineProperty(navigator, 'mediaDevices', {
     configurable: true,
     value: {
-      getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: vi.fn() }] })),
+      getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: hoisted.micStop }] })),
     },
   });
 
   class FakeAudioContext {
-    createAnalyser() {
-      return {
-        fftSize: 32,
-        getByteTimeDomainData: (samples: Uint8Array) => samples.fill(128),
-      };
-    }
+    sampleRate = 16000;
+    state: AudioContextState = 'running';
+    destination = {} as AudioDestinationNode;
+    resume = vi.fn(async () => undefined);
     createMediaStreamSource() {
       return { connect: vi.fn(), disconnect: vi.fn() };
     }
-    close = vi.fn(async () => undefined);
+    createGain() {
+      return { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() };
+    }
+    createScriptProcessor() {
+      return { onaudioprocess: null, connect: vi.fn(), disconnect: vi.fn() };
+    }
+    close = vi.fn(async () => {
+      if (hoisted.audioCloseReject) {
+        throw new Error('audio close failed');
+      }
+      return undefined;
+    });
   }
 
   vi.stubGlobal('AudioContext', FakeAudioContext);
@@ -89,6 +103,9 @@ describe('App', () => {
     hoisted.deepgramKey = 'test-key';
     hoisted.callbacks = undefined;
     hoisted.active = false;
+    hoisted.micStop = vi.fn();
+    hoisted.lifecycleStops = 0;
+    hoisted.audioCloseReject = false;
     installBrowserFakes();
   });
 
@@ -133,5 +150,59 @@ describe('App', () => {
 
     await waitFor(() => expect(screen.getAllByText('answer from speaker two')).toHaveLength(2));
     expect(screen.getAllByText('Person 2')).toHaveLength(2);
+  });
+
+  it('windows long transcript rendering to the latest 500 turns', async () => {
+    vi.stubEnv('VITE_DEEPGRAM_API_KEY', 'test-key');
+    const { App } = await import('./App');
+    render(<App />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start Captions' }));
+    expect(await screen.findByText('Full speaker transcript')).toBeInTheDocument();
+
+    act(() => {
+      for (let index = 1; index <= 550; index += 1) {
+        hoisted.callbacks?.onFinalText?.(`caption ${index}`, 'Person 1');
+      }
+    });
+
+    expect(await screen.findByText('Showing latest 500 of 550 transcript turns.')).toBeInTheDocument();
+    expect(screen.queryByText('caption 1')).not.toBeInTheDocument();
+    expect(screen.getAllByText('caption 550')).toHaveLength(2);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Load earlier turns' }));
+    expect(await screen.findByText('caption 1')).toBeInTheDocument();
+  });
+
+  it('stops local audio UI state when Deepgram fails unexpectedly', async () => {
+    vi.stubEnv('VITE_DEEPGRAM_API_KEY', 'test-key');
+    const { App } = await import('./App');
+    render(<App />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start Captions' }));
+    expect(await screen.findByText('Full speaker transcript')).toBeInTheDocument();
+
+    act(() => {
+      hoisted.callbacks?.onError?.({ code: 'connectivity-loss', message: 'failed' });
+      hoisted.callbacks?.onActiveChange?.(false);
+    });
+
+    await waitFor(() => expect(hoisted.micStop).toHaveBeenCalled());
+  });
+
+  it('still stops lifecycle when local audio cleanup rejects', async () => {
+    vi.stubEnv('VITE_DEEPGRAM_API_KEY', 'test-key');
+    hoisted.audioCloseReject = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { App } = await import('./App');
+    render(<App />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start Captions' }));
+    expect(await screen.findByText('Full speaker transcript')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
+
+    await waitFor(() => expect(hoisted.lifecycleStops).toBeGreaterThan(0));
+    expect(warn).toHaveBeenCalledWith('Audio pipeline cleanup failed.', expect.any(Error));
+    warn.mockRestore();
   });
 });

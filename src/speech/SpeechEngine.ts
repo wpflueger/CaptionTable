@@ -1,3 +1,5 @@
+import { AudioPipeline } from '../audio/AudioPipeline';
+
 export type SpeechErrorCode =
   | 'microphone-permission'
   | 'transcription-unavailable'
@@ -30,6 +32,8 @@ export interface SpeechEngine {
   stop(): void;
   setLanguage(language: string): void;
   setCallbacks(callbacks: SpeechEngineCallbacks): void;
+  setMediaStream?(stream: MediaStream | null, options?: { ownsStream?: boolean }): void;
+  setAudioSource?(source: AudioPipeline | null, options?: { ownsSource?: boolean }): void;
   isActive(): boolean;
 }
 
